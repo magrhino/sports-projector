@@ -73,7 +73,7 @@ These tools use transparent formulas and return assumptions/caveats. They do not
 
 - `project_nba_historical_score`: project an NBA matchup score from local historical model artifacts.
 
-The historical projection bridge runs `python -m nba_historical_projection predict` through a safe `execFile` wrapper and passes JSON over stdin/stdout. It expects an artifact directory with `manifest.json`, model files, feature columns, and local team-stat artifacts. Large SQLite/model files are intentionally not included in the npm package.
+The historical projection bridge runs `python -m nba_historical_projection predict` through a safe `execFile` wrapper and passes JSON over stdin/stdout. It expects an artifact directory with `manifest.json`, model files, feature columns, and either local team-stat artifacts or numeric feature defaults. Large SQLite/model files are intentionally not included in the npm package.
 
 The first integration is projection-only. It does not expose EV, Kelly sizing, stake sizing, or action recommendations. Live in-game projection is separate future work.
 
@@ -157,7 +157,7 @@ PYTHONPATH=python python3 -m nba_historical_projection train \
 
 The training dataset must include numeric `Score` and `Home-Margin` targets. Feature snapshots should contain only information available before game start.
 
-Training writes `manifest.json`, refreshes `artifact_manifest.json`, and appends a `train` event to `artifact_import_log.jsonl`.
+Training writes `manifest.json` with numeric median feature defaults, refreshes `artifact_manifest.json`, and appends a `train` event to `artifact_import_log.jsonl`.
 
 ## Data Sources and Safety
 

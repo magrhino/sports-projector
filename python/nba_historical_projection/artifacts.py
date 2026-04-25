@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ class ArtifactError(ValueError):
 
 STATE_MANIFEST_NAME = "artifact_manifest.json"
 IMPORT_LOG_NAME = "artifact_import_log.jsonl"
+REQUEST_DEFAULT_FEATURES = {"Days-Rest-Home", "Days-Rest-Away", "OU", "Spread"}
 
 
 def artifact_path(root: Path, value: str) -> Path:
@@ -76,7 +78,65 @@ def validate_manifest(artifact_dir: str | Path, require_models: bool = True) -> 
         if require_models and not artifact_path(root, stats_path).is_file():
             raise ArtifactError(f"Team stats artifact is missing: {artifact_path(root, stats_path)}")
 
+    validate_feature_sources(manifest, feature_columns, has_team_stats=team_stats is not None)
+
     return manifest
+
+
+def validate_feature_sources(
+    manifest: dict[str, Any],
+    feature_columns: list[str],
+    has_team_stats: bool,
+) -> None:
+    feature_defaults = manifest.get("feature_defaults", {})
+    if feature_defaults is None:
+        feature_defaults = {}
+    if not isinstance(feature_defaults, dict):
+        raise ArtifactError("manifest feature_defaults must be an object when provided")
+
+    invalid_defaults = [
+        column
+        for column in feature_columns
+        if column in feature_defaults and not is_finite_number(feature_defaults[column])
+    ]
+    if invalid_defaults:
+        raise ArtifactError(
+            "manifest feature_defaults must contain numeric values for feature_columns: "
+            + ", ".join(invalid_defaults[:20])
+        )
+
+    missing_request_defaults = [
+        column
+        for column in feature_columns
+        if column in REQUEST_DEFAULT_FEATURES and column not in feature_defaults
+    ]
+    if missing_request_defaults:
+        raise ArtifactError(
+            "manifest feature_defaults must define request fallback values for: "
+            + ", ".join(missing_request_defaults[:20])
+        )
+
+    if has_team_stats:
+        return
+
+    missing_defaults = [
+        column
+        for column in feature_columns
+        if column not in feature_defaults
+    ]
+    if missing_defaults:
+        raise ArtifactError(
+            "manifest must define feature_defaults for all feature_columns when team_stats is not configured: "
+            + ", ".join(missing_defaults[:20])
+        )
+
+
+def is_finite_number(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number)
 
 
 def utc_timestamp() -> str:

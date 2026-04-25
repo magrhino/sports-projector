@@ -17,6 +17,7 @@ from nba_historical_projection.artifacts import (
 from nba_historical_projection.cli import main as cli_main
 from nba_historical_projection.dataset import build_game_record
 from nba_historical_projection.models import derive_team_scores, predict_from_artifacts
+from nba_historical_projection.training import build_feature_defaults_from_frame
 
 
 class HistoricalProjectionTests(unittest.TestCase):
@@ -89,6 +90,37 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertFalse(inventory["models"]["total_score"]["exists"])
             self.assertIn("Model artifact is missing", inventory["validation"]["issues"][0])
 
+    def test_validate_manifest_fails_without_team_stats_or_feature_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "models").mkdir()
+            self.write_json(root / "models" / "total.json", {"intercept": 200, "coefficients": [1]})
+            self.write_json(root / "models" / "margin.json", {"intercept": 0, "coefficients": [1]})
+            self.write_json(
+                root / "manifest.json",
+                {
+                    "feature_columns": ["POWER"],
+                    "models": {
+                        "total_score": {"type": "linear_json", "path": "models/total.json"},
+                        "home_margin": {"type": "linear_json", "path": "models/margin.json"},
+                    },
+                },
+            )
+
+            with self.assertRaisesRegex(ArtifactError, "feature_defaults"):
+                validate_manifest(root)
+
+    def test_training_feature_defaults_use_numeric_medians(self):
+        defaults = build_feature_defaults_from_frame(
+            {
+                "HOME_POWER": [1, 3, 5],
+                "AWAY_POWER": ["2", "4", "6"],
+            },
+            ["HOME_POWER", "AWAY_POWER"],
+        )
+
+        self.assertEqual(defaults, {"HOME_POWER": 3.0, "AWAY_POWER": 4.0})
+
     def test_validate_cli_can_write_state_and_run_log(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -99,6 +131,7 @@ class HistoricalProjectionTests(unittest.TestCase):
                 root / "manifest.json",
                 {
                     "feature_columns": ["POWER"],
+                    "feature_defaults": {"POWER": 1},
                     "models": {
                         "total_score": {"type": "linear_json", "path": "models/total.json"},
                         "home_margin": {"type": "linear_json", "path": "models/margin.json"},

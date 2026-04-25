@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 
@@ -62,7 +64,9 @@ def train_xgboost_regressors(
         for column in frame.columns
         if column not in TARGET_COLUMNS and column not in DROP_COLUMNS
     ]
-    x = frame[feature_columns].astype(float).to_numpy()
+    feature_frame = frame[feature_columns].astype(float)
+    feature_defaults = build_feature_defaults_from_frame(feature_frame, feature_columns)
+    x = feature_frame.to_numpy()
     y_total = frame["Score"].astype(float).to_numpy()
     y_margin = frame["Home-Margin"].astype(float).to_numpy()
     split_index = max(1, int(len(frame) * (1 - test_size)))
@@ -84,6 +88,7 @@ def train_xgboost_regressors(
         },
         "seasons": seasons,
         "feature_columns": feature_columns,
+        "feature_defaults": feature_defaults,
         "models": {
             "total_score": {
                 "type": "xgboost_json",
@@ -101,6 +106,37 @@ def train_xgboost_regressors(
         json.dump(manifest, handle, indent=2, sort_keys=True)
         handle.write("\n")
     return manifest
+
+
+def build_feature_defaults_from_frame(feature_frame: Any, feature_columns: list[str]) -> dict[str, float]:
+    defaults: dict[str, float] = {}
+    missing: list[str] = []
+    for column in feature_columns:
+        values = numeric_values(feature_frame[column])
+        if not values:
+            missing.append(column)
+            continue
+        defaults[column] = round(float(median(values)), 6)
+
+    if missing:
+        raise RuntimeError(
+            "Unable to derive numeric feature defaults for: "
+            + ", ".join(missing[:20])
+        )
+
+    return defaults
+
+
+def numeric_values(values: Any) -> list[float]:
+    numbers: list[float] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            numbers.append(number)
+    return numbers
 
 
 def train_one_model(x, y, split_index: int, xgb, np):
