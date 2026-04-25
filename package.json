@@ -1,0 +1,49 @@
+{
+  "name": "sports-projector",
+  "version": "0.1.0",
+  "description": "Read-only sports projection and public market research MCP server",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "sports-projector": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "python/nba_historical_projection",
+    "README.md"
+  ],
+  "scripts": {
+    "mcp": "node node_modules/tsx/dist/cli.mjs src/index.ts",
+    "build": "node node_modules/typescript/lib/tsc.js -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "node node_modules/vitest/dist/cli.js run"
+  },
+  "keywords": [
+    "mcp",
+    "sports",
+    "espn",
+    "kalshi",
+    "prediction-markets",
+    "read-only"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magrhino/sports-projector.git"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.9",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

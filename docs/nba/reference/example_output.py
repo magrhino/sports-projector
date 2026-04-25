@@ -1,0 +1,20 @@
+{
+    "current_total": 161,
+    "elapsed_minutes": 38.58,
+    "minutes_left": 9.42,
+    "margin": 5,
+    "historical_baseline_total": 201.91,
+    "full_game_rate": 4.173,
+    "prior_rate": 4.206,
+    "recent_rate": 4.173,
+    "blended_rate": 4.183,
+    "trailing_fouls_to_give": None,
+    "foul_bonus": 1.0,
+    "overtime_probability": 0.01,
+    "overtime_bonus": 0.21,
+    "blowout_drag": 0.0,
+    "projected_total": 201.6,
+    "edge_vs_line": -1.4,
+    "p_over": 0.43,
+    "lean": "PASS"
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+.env
+.env.*
+__pycache__/
+*.py[cod]
+
+# Local historical artifacts and generated state are operator-managed.
+data/historical/
