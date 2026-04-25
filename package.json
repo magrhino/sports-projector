@@ -10,6 +10,7 @@
   },
   "files": [
     "dist",
+    "public",
     "fixtures/nba-historical-linear",
     "python/nba_historical_projection/*.py",
     "python/nba_historical_projection/**/*.py",
@@ -17,8 +18,10 @@
   ],
   "scripts": {
     "mcp": "node node_modules/tsx/dist/cli.mjs src/index.ts",
+    "web": "node node_modules/tsx/dist/cli.mjs src/http/index.ts",
     "build": "node node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:web": "node dist/http/index.js",
     "test": "node node_modules/vitest/dist/cli.js run"
   },
   "keywords": [

@@ -1,0 +1,165 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f6f7f9;
+  color: #17202a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  width: min(1100px, calc(100% - 32px));
+  margin: 32px auto;
+}
+
+h1 {
+  margin: 0 0 20px;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 140px auto;
+  gap: 12px;
+  align-items: end;
+  padding: 16px;
+  background: #ffffff;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+input,
+select,
+button {
+  min-height: 42px;
+  border-radius: 5px;
+  font: inherit;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid #b8c0cc;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #17202a;
+}
+
+button {
+  border: 1px solid #1f5eff;
+  padding: 0 18px;
+  background: #1f5eff;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  border-color: #8fa8f7;
+  background: #8fa8f7;
+  cursor: wait;
+}
+
+.status {
+  min-height: 24px;
+  margin: 14px 0;
+  color: #475467;
+}
+
+.error {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #d92d20;
+  border-radius: 6px;
+  background: #fff4f2;
+  color: #912018;
+}
+
+.results {
+  margin-top: 16px;
+}
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+#results-count {
+  color: #475467;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eaecf0;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: #eef2f6;
+  font-size: 0.85rem;
+  color: #344054;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.team {
+  font-weight: 700;
+}
+
+.muted {
+  color: #667085;
+}
+
+@media (max-width: 720px) {
+  .page {
+    width: min(100% - 20px, 1100px);
+    margin: 20px auto;
+  }
+
+  .search-form {
+    grid-template-columns: 1fr;
+  }
+
+  button {
+    width: 100%;
+  }
+}

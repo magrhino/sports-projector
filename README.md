@@ -23,6 +23,27 @@ npm run build
 npm start
 ```
 
+Run the minimal web app locally:
+
+```bash
+npm run web
+```
+
+Open `http://localhost:8080` and search for a team such as `Celtics` with league `NBA`.
+
+Run the web app with Docker:
+
+```bash
+docker compose up --build
+```
+
+The frontend is served at `http://localhost:8080`. The team search API is also
+available directly, for example:
+
+```bash
+curl "http://localhost:8080/api/games/search?team=Celtics&league=nba"
+```
+
 ## Codex MCP Setup
 
 From this repository:

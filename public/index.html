@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sports Projector</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="page">
+      <h1>Game Search</h1>
+
+      <form id="search-form" class="search-form">
+        <label>
+          Team
+          <input id="team-input" name="team" type="search" placeholder="Celtics" autocomplete="off" required>
+        </label>
+
+        <label>
+          League
+          <select id="league-select" name="league">
+            <option value="nba" selected>NBA</option>
+            <option value="nfl">NFL</option>
+            <option value="mlb">MLB</option>
+            <option value="nhl">NHL</option>
+          </select>
+        </label>
+
+        <button id="search-button" type="submit">Search</button>
+      </form>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="error" class="error" role="alert" hidden></div>
+
+      <section id="results" class="results" hidden>
+        <div class="results-header">
+          <h2 id="results-title">Results</h2>
+          <span id="results-count"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date/time</th>
+                <th>Away</th>
+                <th>Home</th>
+                <th>Score/status</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
