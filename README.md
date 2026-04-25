@@ -197,6 +197,16 @@ npm test
 PYTHONPATH=python python3 -m unittest discover -s python/tests
 ```
 
+### Live Public Endpoint Tests
+
+Live ESPN and Kalshi smoke tests are skipped by default so normal CI does not depend on external network availability. To run them explicitly from a network-enabled environment:
+
+```bash
+SPORTS_PROJECTOR_LIVE_TESTS=1 npm test -- tests/live-public-endpoints.test.ts
+```
+
+These tests make one unauthenticated public request to ESPN and one to Kalshi. They validate client routing, source URLs, and response shape only; they do not assert volatile scores, schedules, prices, or market counts.
+
 ## Reference Notes
 
 BetTrack was used only as idea/reference material for prompt style and sports MCP ergonomics. This server does not copy BetTrack architecture and does not include its dashboard, database, odds provider integration, bet tracking, or portfolio concepts.
