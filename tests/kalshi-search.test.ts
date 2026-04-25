@@ -39,6 +39,31 @@ describe("KalshiClient.searchMarkets", () => {
     });
   });
 
+  it("passes explicit ticker filters to the markets endpoint", async () => {
+    const requests: URL[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(input.toString());
+      requests.push(url);
+      return jsonResponse({
+        cursor: "",
+        markets: [{ ticker: "KXNBA-CELNYK-TOTAL-203", title: "NBA total market" }]
+      });
+    };
+    const client = new KalshiClient({
+      env: { SPORTS_KALSHI_KALSHI_TTL_SECONDS: "0" },
+      fetchImpl,
+      timeoutMs: 1000
+    });
+
+    await client.searchMarkets({
+      tickers: ["KXNBA-CELNYK-TOTAL-203", "KXNBA-CELNYK-TOTAL-204"],
+      limit: 2
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.searchParams.get("tickers")).toBe("KXNBA-CELNYK-TOTAL-203,KXNBA-CELNYK-TOTAL-204");
+  });
+
   it("paginates query searches until enough matching markets are found", async () => {
     const requests: URL[] = [];
     const pages: Record<string, unknown> = {

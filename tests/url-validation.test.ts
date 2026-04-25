@@ -6,8 +6,12 @@ import {
   buildEspnTeamScheduleUrl
 } from "../src/clients/espn.js";
 import {
+  buildKalshiEventUrl,
+  buildKalshiGameStatsUrl,
+  buildKalshiLiveDataUrl,
   buildKalshiMarketUrl,
   buildKalshiMarketsUrl,
+  buildKalshiMilestonesUrl,
   buildKalshiOrderbookUrl,
   buildKalshiTradesUrl
 } from "../src/clients/kalshi.js";
@@ -39,7 +43,12 @@ describe("URL builders", () => {
   it("builds only allowlisted Kalshi URLs", () => {
     const urls = [
       buildKalshiMarketsUrl({ limit: 10, status: "open", seriesTicker: "KXNBA" }),
+      buildKalshiMarketsUrl({ tickers: ["KXTEST-26APR", "KXTEST-26MAY"] }),
       buildKalshiMarketUrl("KXTEST-26APR"),
+      buildKalshiEventUrl("KXEVENT-26APR", true),
+      buildKalshiMilestonesUrl({ relatedEventTicker: "KXEVENT-26APR", category: "Sports", limit: 10 }),
+      buildKalshiLiveDataUrl("milestone-123"),
+      buildKalshiGameStatsUrl("milestone-123"),
       buildKalshiOrderbookUrl("KXTEST-26APR", 10),
       buildKalshiTradesUrl({ ticker: "KXTEST-26APR", limit: 5 })
     ];

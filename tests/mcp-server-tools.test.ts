@@ -16,7 +16,8 @@ const DOCUMENTED_TOOL_NAMES = [
   "calculate_binary_market_spread",
   "estimate_total_score_projection",
   "compare_projection_to_market",
-  "project_nba_historical_score"
+  "project_nba_historical_score",
+  "project_nba_live_score"
 ] as const;
 
 describe("sports-projector MCP server tools", () => {

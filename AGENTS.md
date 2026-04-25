@@ -1,120 +1,139 @@
-# Global Codex Instructions
+# AGENTS.md
 
-## Default behavior
+## Scope
 
-- Make the smallest correct change that satisfies the request.
-- Prefer targeted fixes over broad rewrites.
-- Do not refactor unrelated code unless explicitly asked.
-- Do not format, rename, or reorganize unrelated files.
-- Preserve existing behavior unless the task explicitly asks to change it.
-- Before changing code, inspect the relevant files and existing patterns.
+Repo-local routing/context only. Do not repeat global Codex instructions. Global instructions control default behavior, commits, security, validation, and final response format unless this file gives a more specific repo-local rule.
 
-## Instruction precedence
+## Init protocol
 
-- Follow instruction precedence in this order:
-  1. Explicit user request for the current task.
-  2. The closest applicable `AGENTS.md` / `AGENTS.override.md` instructions.
-  3. Broader repo-level `AGENTS.md` instructions.
-  4. Repo `CONTRIBUTING.md`, README, and other project docs.
-  5. Existing code style and nearby implementation patterns.
-- When files in multiple directories are changed, check for applicable nested `AGENTS.md` files in each affected path.
-- If instructions conflict, follow the more specific applicable instruction unless it conflicts with the explicit user request or safety requirements.
+When asked to initialize, `/init`, personalize, or complete this file:
 
-## Context usage
+- Inspect the repo only enough to replace `TODO_INIT` values below.
+- Prefer targeted commands: `pwd`, `git status --short`, `find`/`ls`, `rg --files`, package/config manifests, README, CONTRIBUTING, existing tests, and nearest examples.
+- Do not read vendored deps, generated output, build artifacts, coverage, caches, binary assets, lockfiles, snapshots, or large data files unless required to identify commands.
+- Do not duplicate global policies on commits, security, validation, or final response format.
+- Preserve this file as a compact routing index, not a prose guide.
+- Replace every `TODO_INIT` with repo-specific facts.
+- Delete sections that do not apply.
+- Keep `Path map` and `Repo commands` accurate over exhaustive.
+- Keep each local summary under 40 words.
+- Keep this file preferably under 12 KiB; hard max 24 KiB.
+- If deeper context is useful, create or reference small files under `docs/agents/` instead of expanding this file.
+- After updating, report:
+  - files inspected
+  - sections changed
+  - unknowns left as `TODO_INIT`
+  - suggested nested `AGENTS.md` files, if any
 
-- Read only the files needed to understand and complete the task.
-- Prefer targeted searches such as `rg`, file-specific reads, and focused snippets over dumping large files.
-- Do not read generated files, vendored dependencies, build outputs, lockfiles, or large data files unless directly relevant.
-- When context is ambiguous, inspect nearby examples before inventing new patterns.
-- Keep summaries concise: report findings and decisions, not raw file contents.
+Recommended init discovery order:
 
-## Commit message hard requirement
+1. Identify project root and package/build manifests.
+2. Identify major source, test, config, docs, scripts, and generated paths.
+3. Identify install, lint, typecheck, test, build, and targeted-test commands from manifests/docs.
+4. Identify framework/language conventions from nearby files.
+5. Fill path map, task routing, invariants, commands, validation selection, and summaries.
+6. Remove this sentence after successful initialization: `TODO_INIT: file has not been personalized yet`.
 
-- Do not create, amend, squash, rebase, or otherwise modify commits unless explicitly asked.
-- If creating, amending, squashing, rebasing, or proposing commits, every commit subject MUST follow Conventional Commits.
+TODO_INIT: file has not been personalized yet.
 
-Format:
+## Context budget
 
-```text
-<type>(optional-scope): <imperative summary>
-```
+- Start with `Path map`; read only rows relevant to the task.
+- Prefer `rg`, targeted file reads, manifest reads, and nearby examples.
+- Open linked files under `docs/agents/` only when the task matches their trigger.
+- If editing a path with a nested `AGENTS.md`, read that file before editing.
+- Avoid broad tree reads.
 
-Allowed types:
+## Path map
 
-```text
-feat, fix, docs, test, refactor, chore, ci, build, perf, style, revert
-```
+| Path | Purpose | Read first | Edit notes | Avoid unless required |
+|---|---|---|---|---|
+| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
+| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
+| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
 
-Scope rules:
+## Task routing
 
-- Choose the scope from the main component, package, directory, feature, or concern changed.
-- Do NOT reuse one example scope such as `abs` for unrelated changes.
-- Omit the scope if no single clear scope applies.
-- Prefer short lowercase scopes.
+- API/server behavior: inspect `TODO_INIT`, called service/module, validation/schema, and matching tests.
+- UI/client behavior: inspect `TODO_INIT`, nearest component, direct caller/callee if needed, style pattern, and matching tests/stories.
+- DB/data behavior: inspect `TODO_INIT`, query/model, callers, migration policy, and focused tests.
+- CLI/script behavior: inspect `TODO_INIT`, entrypoint, caller, README/docs reference, and tests.
+- Config/build/CI behavior: inspect exact changed config plus command/workflow that consumes it.
+- Test-only work: inspect target behavior and nearest existing test style; avoid production edits unless needed.
+- Docs-only work: inspect relevant doc plus source only if verifying behavior.
+- Bug fix: inspect reproduction path, failing or missing test, owning module, and nearby similar fixes.
 
-Examples of possible scopes:
+## Key invariants
 
-```text
-api, db, ui, auth, import, rollback, metadata, ci, docs, docker, tests, deps
-```
+- `TODO_INIT`
+- `TODO_INIT`
+- `TODO_INIT`
 
-Good examples:
+## Repo commands
 
-```text
-fix(import): retry only transient transport errors
-fix(metadata): log json encoding failures
-test(rollback): cover interrupted run resume order
-docs(deploy): document migration and env requirements
-ci: normalize go setup version
-refactor(api): extract shared request validation
-chore(deps): update frontend lockfile
-```
+Fill exact commands from manifests/docs. Use package manager already used by repo.
 
-Bad examples:
+| Purpose | Command |
+|---|---|
+| install | `TODO_INIT` |
+| lint | `TODO_INIT` |
+| typecheck | `TODO_INIT` |
+| unit tests | `TODO_INIT` |
+| targeted test | `TODO_INIT` |
+| build | `TODO_INIT` |
+| format check | `TODO_INIT` |
 
-```text
-Fix ABS import retry and metadata encoding
-fix(abs): update ci workflow
-fix(abs): edit deployment docs
-fix(abs): change frontend table layout
-```
+## Validation selection
 
-Before running any command that creates or rewrites commits, verify the final commit subject matches this regex:
+- Source change: run targeted test first, then lint/typecheck/build if practical.
+- UI change: run targeted component/UI test if present; otherwise lint/typecheck.
+- Server/API change: run targeted unit/integration test covering changed route/service.
+- Data/query change: run focused data/model/query tests; avoid schema changes unless requested.
+- Config/CI change: run smallest command validating changed config.
+- Docs-only change: no tests required unless docs are generated or validated.
+- Unknown command: inspect manifests/docs; do not invent commands.
 
-```text
-^(feat|fix|docs|test|refactor|chore|ci|build|perf|style|revert)(\([a-z0-9._-]+\))?!?: .+
-```
+## Local summaries
 
-## Code quality
+Keep each under 40 words. Summaries are for routing, not documentation.
 
-- Preserve existing behavior unless the task explicitly asks to change it.
-- Add or update focused tests for behavior changes.
-- Avoid silent failures; surface errors clearly through logs, returned errors, or test failures.
-- Avoid unbounded memory growth, unnecessary full-table scans, and repeated expensive work inside loops.
-- Avoid adding new dependencies unless clearly justified.
-- Do not change public APIs, database schema, migrations, CI versions, or configuration formats unless required by the task.
+- `TODO_INIT`: `TODO_INIT`
+- `TODO_INIT`: `TODO_INIT`
+- `TODO_INIT`: `TODO_INIT`
 
-## Security and secrets
+## Deferred context files
 
-- Never commit secrets, API keys, tokens, private service URLs, `.env` files, or private credentials.
-- Use placeholders for sensitive values and clearly mark example-only values.
-- Treat user-provided URLs, headers, paths, and API keys as untrusted input.
-- Avoid SSRF, path traversal, shell injection, SQL injection, and unsafe deserialization patterns.
+Create these only if useful. Open only when trigger matches.
 
-## Validation
+| Trigger | File |
+|---|---|
+| architecture or cross-module design | `docs/agents/architecture.md` |
+| testing strategy, fixtures, or flaky tests | `docs/agents/testing.md` |
+| debugging production-like failures | `docs/agents/debugging.md` |
+| release, versioning, changelog, packaging | `docs/agents/release.md` |
+| security-sensitive code paths | `docs/agents/security.md` |
 
-- Run the most relevant targeted tests first.
-- If practical, run broader tests before finishing.
-- Report the exact commands run and whether they passed or failed.
-- Do not claim tests, builds, or checks passed unless they were actually run.
-- If a command fails, report the failure and the most relevant error.
-- If tests cannot be run, explain why and identify the best next validation command.
+## Generated/low-value paths
 
-## Final response format
+Do not read or edit unless directly required.
 
-End with:
+- `TODO_INIT`
+- `TODO_INIT`
+- `TODO_INIT`
 
-- Summary of changes
-- Tests run
-- Risks or follow-ups
-- Final or draft commit message: include the exact Conventional Commit subject used, proposed, or that would be used if a commit were requested; if no commit is relevant, say "Not applicable".
+## Nested AGENTS suggestions
+
+During initialization, add suggested nested files here if local rules would materially reduce context.
+
+| Path | Why nested guidance may help |
+|---|---|
+| `TODO_INIT` | `TODO_INIT` |
+
+## Edit discipline
+
+- Identify owning path from `Path map` before editing.
+- Read nearest implementation and test examples first.
+- Make the smallest correct change.
+- Do not normalize formatting outside touched lines.
+- Do not move code across directories unless requested.
+- If multiple areas are touched, re-check whether nested `AGENTS.md` files apply.

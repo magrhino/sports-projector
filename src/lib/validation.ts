@@ -81,6 +81,19 @@ export const KalshiTickerSchema = z
   .transform((value) => value.toUpperCase())
   .refine((value) => /^[A-Z0-9._-]+$/.test(value), "Kalshi ticker contains unsupported characters");
 
+export const KalshiTickerListSchema = z
+  .array(KalshiTickerSchema)
+  .min(1)
+  .max(20)
+  .transform((tickers) => Array.from(new Set(tickers)));
+
+export const KalshiMilestoneIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((value) => /^[A-Za-z0-9._:-]+$/.test(value), "Kalshi milestone id contains unsupported characters");
+
 export const KalshiCursorSchema = z
   .string()
   .trim()

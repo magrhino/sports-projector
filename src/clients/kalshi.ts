@@ -19,12 +19,19 @@ export interface NormalizedKalshiMarket {
   ticker: string | null;
   title: string | null;
   subtitle: string | null;
+  yes_sub_title: string | null;
+  no_sub_title: string | null;
   event_ticker: string | null;
   series_ticker: string | null;
   status: string | null;
   open_time: string | null;
   close_time: string | null;
   expiration_time: string | null;
+  occurrence_datetime: string | null;
+  strike_type: string | null;
+  floor_strike: number | null;
+  cap_strike: number | null;
+  functional_strike: string | null;
   yes_bid_cents: number | null;
   yes_ask_cents: number | null;
   no_bid_cents: number | null;
@@ -54,18 +61,58 @@ export function buildKalshiMarketsUrl(input: {
   status?: string;
   seriesTicker?: string;
   eventTicker?: string;
+  tickers?: readonly string[] | string;
 }): URL {
   return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "markets"], {
     limit: input.limit,
     cursor: input.cursor,
     status: input.status && input.status !== "all" ? input.status : undefined,
     series_ticker: input.seriesTicker,
-    event_ticker: input.eventTicker
+    event_ticker: input.eventTicker,
+    tickers: tickersQuery(input.tickers)
   });
 }
 
 export function buildKalshiMarketUrl(ticker: string): URL {
   return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "markets", ticker]);
+}
+
+export function buildKalshiEventUrl(eventTicker: string, withNestedMarkets?: boolean): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "events", eventTicker], {
+    with_nested_markets: withNestedMarkets ? "true" : undefined
+  });
+}
+
+export function buildKalshiMilestonesUrl(input: {
+  limit?: number;
+  cursor?: string;
+  relatedEventTicker?: string;
+  category?: string;
+  competition?: string;
+  type?: string;
+  minimumStartDate?: string;
+  minUpdatedTs?: number;
+}): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "milestones"], {
+    limit: input.limit,
+    cursor: input.cursor,
+    related_event_ticker: input.relatedEventTicker,
+    category: input.category,
+    competition: input.competition,
+    type: input.type,
+    minimum_start_date: input.minimumStartDate,
+    min_updated_ts: input.minUpdatedTs
+  });
+}
+
+export function buildKalshiLiveDataUrl(milestoneId: string, includePlayerStats?: boolean): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "live_data", "milestone", milestoneId], {
+    include_player_stats: includePlayerStats ? "true" : undefined
+  });
+}
+
+export function buildKalshiGameStatsUrl(milestoneId: string): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "live_data", "milestone", milestoneId, "game_stats"]);
 }
 
 export function buildKalshiOrderbookUrl(ticker: string, depth?: number): URL {
@@ -110,6 +157,7 @@ export class KalshiClient {
     status?: string;
     seriesTicker?: string;
     eventTicker?: string;
+    tickers?: readonly string[] | string;
   }): Promise<CachedFetch<unknown>> {
     const query = input.query?.trim();
     if (query) {
@@ -122,6 +170,31 @@ export class KalshiClient {
 
   async getMarket(input: { ticker: string }): Promise<CachedFetch<unknown>> {
     return this.fetchCached(buildKalshiMarketUrl(input.ticker));
+  }
+
+  async getEvent(input: { eventTicker: string; withNestedMarkets?: boolean }): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiEventUrl(input.eventTicker, input.withNestedMarkets));
+  }
+
+  async getMilestones(input: {
+    limit?: number;
+    cursor?: string;
+    relatedEventTicker?: string;
+    category?: string;
+    competition?: string;
+    type?: string;
+    minimumStartDate?: string;
+    minUpdatedTs?: number;
+  }): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiMilestonesUrl(input));
+  }
+
+  async getLiveData(input: { milestoneId: string; includePlayerStats?: boolean }): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiLiveDataUrl(input.milestoneId, input.includePlayerStats));
+  }
+
+  async getGameStats(input: { milestoneId: string }): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiGameStatsUrl(input.milestoneId));
   }
 
   async getOrderbook(input: { ticker: string; depth?: number }): Promise<CachedFetch<unknown>> {
@@ -155,6 +228,7 @@ export class KalshiClient {
     status?: string;
     seriesTicker?: string;
     eventTicker?: string;
+    tickers?: readonly string[] | string;
   }): Promise<CachedFetch<unknown>> {
     const requestedLimit = normalizeMarketSearchLimit(input.limit);
     const matches: unknown[] = [];
@@ -223,6 +297,96 @@ export function normalizeMarkets(raw: unknown, query?: string): {
 export function normalizeSingleMarket(raw: unknown): NormalizedKalshiMarket {
   const data = asRecord(raw);
   return normalizeMarket(data.market ?? data);
+}
+
+export function normalizeEvent(raw: unknown): {
+  event_ticker: string | null;
+  series_ticker: string | null;
+  title: string | null;
+  sub_title: string | null;
+  strike_date: string | null;
+  category: string | null;
+  markets: NormalizedKalshiMarket[];
+} {
+  const data = asRecord(raw);
+  const event = asRecord(data.event ?? data);
+  const nestedMarkets = asArray(event.markets);
+  const topLevelMarkets = asArray(data.markets);
+
+  return {
+    event_ticker: asString(event.event_ticker),
+    series_ticker: asString(event.series_ticker),
+    title: asString(event.title),
+    sub_title: asString(event.sub_title),
+    strike_date: asString(event.strike_date),
+    category: asString(event.category),
+    markets: (nestedMarkets.length > 0 ? nestedMarkets : topLevelMarkets).map(normalizeMarket)
+  };
+}
+
+export function normalizeMilestones(raw: unknown): {
+  count: number;
+  cursor: string | null;
+  milestones: Array<{
+    id: string | null;
+    category: string | null;
+    type: string | null;
+    start_date: string | null;
+    end_date: string | null;
+    title: string | null;
+    related_event_tickers: string[];
+    primary_event_tickers: string[];
+    details: Record<string, unknown>;
+    source_id: string | null;
+    source_ids: Record<string, unknown>;
+  }>;
+} {
+  const data = asRecord(raw);
+  const milestones = asArray(data.milestones).map((item) => {
+    const milestone = asRecord(item);
+    return {
+      id: asString(milestone.id),
+      category: asString(milestone.category),
+      type: asString(milestone.type),
+      start_date: asString(milestone.start_date),
+      end_date: asString(milestone.end_date),
+      title: asString(milestone.title),
+      related_event_tickers: asArray(milestone.related_event_tickers).map(String),
+      primary_event_tickers: asArray(milestone.primary_event_tickers).map(String),
+      details: asRecord(milestone.details),
+      source_id: asString(milestone.source_id),
+      source_ids: asRecord(milestone.source_ids)
+    };
+  });
+
+  return {
+    count: milestones.length,
+    cursor: asString(data.cursor),
+    milestones
+  };
+}
+
+export function normalizeLiveData(raw: unknown): {
+  type: string | null;
+  milestone_id: string | null;
+  details: Record<string, unknown>;
+} {
+  const data = asRecord(raw);
+  const liveData = asRecord(data.live_data ?? data);
+  return {
+    type: asString(liveData.type),
+    milestone_id: asString(liveData.milestone_id),
+    details: asRecord(liveData.details)
+  };
+}
+
+export function normalizeGameStats(raw: unknown): {
+  pbp: unknown | null;
+} {
+  const data = asRecord(raw);
+  return {
+    pbp: data.pbp ?? null
+  };
 }
 
 export function normalizeOrderbook(raw: unknown): {
@@ -322,12 +486,19 @@ function normalizeMarket(raw: unknown): NormalizedKalshiMarket {
     ticker: asString(market.ticker),
     title: asString(market.title),
     subtitle: asString(market.subtitle),
+    yes_sub_title: asString(market.yes_sub_title),
+    no_sub_title: asString(market.no_sub_title),
     event_ticker: asString(market.event_ticker),
     series_ticker: asString(market.series_ticker),
     status: asString(market.status),
     open_time: asString(market.open_time),
     close_time: asString(market.close_time),
     expiration_time: asString(market.expiration_time),
+    occurrence_datetime: asString(market.occurrence_datetime),
+    strike_type: asString(market.strike_type),
+    floor_strike: numberFromValue(market.floor_strike),
+    cap_strike: numberFromValue(market.cap_strike),
+    functional_strike: asString(market.functional_strike),
     yes_bid_cents: yesBid,
     yes_ask_cents: yesAsk,
     no_bid_cents: noBid,
@@ -343,6 +514,16 @@ function normalizeMarket(raw: unknown): NormalizedKalshiMarket {
       last_price: probabilityFromCents(lastPrice)
     }
   };
+}
+
+function tickersQuery(tickers: readonly string[] | string | undefined): string | undefined {
+  if (tickers === undefined) {
+    return undefined;
+  }
+  if (typeof tickers === "string") {
+    return tickers;
+  }
+  return tickers.length > 0 ? tickers.join(",") : undefined;
 }
 
 function normalizeOrderbookLevels(rawLevels: unknown[], valuesAreDollars: boolean): NormalizedOrderbookLevel[] {

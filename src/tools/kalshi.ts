@@ -13,6 +13,7 @@ import {
   DepthSchema,
   KalshiCursorSchema,
   KalshiLargeLimitSchema,
+  KalshiTickerListSchema,
   KalshiStatusSchema,
   KalshiTickerSchema,
   LimitSchema,
@@ -28,6 +29,7 @@ const KALSHI_CAVEATS = [
 
 const SearchMarketsInputSchema = z.object({
   query: SafeSearchTextSchema.optional(),
+  tickers: KalshiTickerListSchema.optional(),
   series_ticker: KalshiTickerSchema.optional(),
   event_ticker: KalshiTickerSchema.optional(),
   status: KalshiStatusSchema.default("open"),
@@ -68,7 +70,8 @@ export function registerKalshiTools(server: McpServer, client: KalshiClient): vo
           cursor: input.cursor,
           status: input.status,
           seriesTicker: input.series_ticker,
-          eventTicker: input.event_ticker
+          eventTicker: input.event_ticker,
+          tickers: input.tickers
         });
         const data = normalizeMarkets(result.data, input.query);
         return makeResponse({

@@ -36,9 +36,9 @@ If you want to reference the package from another directory after building or pa
 ## Project Layout
 
 - `src/clients`, `src/tools`, and `src/lib`: general ESPN, Kalshi, calculation, validation, and response helpers.
-- `src/nba`: NBA-specific MCP bridge code for local historical score projection.
+- `src/nba`: NBA-specific MCP bridge code for local historical and live score projection.
 - `python/nba_historical_projection`: NBA historical projection artifact CLI, feature, model, dataset, and training code.
-- `docs/nba/reference`: scratch/reference notes for NBA live-total projection ideas that are not part of the runtime path.
+- `docs/nba/reference`: scratch/reference notes and examples for NBA live-total projection ideas.
 
 ## Tools
 
@@ -53,7 +53,7 @@ Returned ESPN data is normalized to include status, period/quarter/inning, clock
 
 ### Kalshi Public Market Data
 
-- `search_kalshi_markets`: list/search public Kalshi markets.
+- `search_kalshi_markets`: list/search public Kalshi markets, including optional explicit ticker filters.
 - `get_kalshi_market`: fetch one public Kalshi market by ticker.
 - `get_kalshi_orderbook`: fetch one public Kalshi orderbook by ticker.
 - `get_kalshi_trades`: fetch public Kalshi trades.
@@ -75,7 +75,13 @@ These tools use transparent formulas and return assumptions/caveats. They do not
 
 The historical projection bridge runs `python -m nba_historical_projection predict` through a safe `execFile` wrapper and passes JSON over stdin/stdout. It expects an artifact directory with `manifest.json`, model files, feature columns, and either local team-stat artifacts or numeric feature defaults. Large SQLite/model files are intentionally not included in the npm package.
 
-The first integration is projection-only. It does not expose EV, Kelly sizing, stake sizing, or action recommendations. Live in-game projection is separate future work.
+The historical integration is projection-only. It does not expose EV, Kelly sizing, stake sizing, or action recommendations.
+
+### NBA Live Score Projection
+
+- `project_nba_live_score`: project the most likely NBA final score for an ESPN event id using public ESPN live state and public Kalshi total-market/live-data endpoints when available.
+
+The live projection tool is NBA-only in v1. It fetches ESPN game summary state, then uses explicit Kalshi market tickers, a Kalshi event ticker, or an automatic `KXNBATOTAL` public-market search to anchor a live total line. When a related Kalshi milestone is available, it attempts to read public live data and play-by-play game stats for recent scoring and foul context. Missing Kalshi data degrades to an ESPN score/pace projection with caveats.
 
 ## Example Prompts
 
@@ -85,6 +91,7 @@ The first integration is projection-only. It does not expose EV, Kelly sizing, s
 - "Use `get_kalshi_orderbook` and explain the YES bid, implied YES ask, and spread."
 - "Estimate the final total from the current score and elapsed game time, showing the formula and caveats."
 - "Compare this projection to a market total without giving betting advice."
+- "Use `project_nba_live_score` for ESPN event 401000000 and include a Kalshi market ticker if one is known."
 
 ## Configuration
 
@@ -174,6 +181,10 @@ Kalshi public endpoints used:
 - `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}`
 - `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook`
 - `https://api.elections.kalshi.com/trade-api/v2/markets/trades`
+- `https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}`
+- `https://api.elections.kalshi.com/trade-api/v2/milestones`
+- `https://api.elections.kalshi.com/trade-api/v2/live_data/milestone/{milestone_id}`
+- `https://api.elections.kalshi.com/trade-api/v2/live_data/milestone/{milestone_id}/game_stats`
 
 ESPN public endpoints are unofficial and undocumented. They can change or become unavailable without notice.
 
@@ -205,7 +216,7 @@ Live ESPN and Kalshi smoke tests are skipped by default so normal CI does not de
 SPORTS_PROJECTOR_LIVE_TESTS=1 npm test -- tests/live-public-endpoints.test.ts
 ```
 
-These tests make one unauthenticated public request to ESPN and one to Kalshi. They validate client routing, source URLs, and response shape only; they do not assert volatile scores, schedules, prices, or market counts.
+These tests make unauthenticated public requests to a small ESPN endpoint matrix for supported NBA/NFL/MLB/NHL scoreboard, teams, and specific-team endpoints, plus one Kalshi markets request. They validate endpoint health, client routing, source URLs, and stable top-level response shape only; they do not assert volatile scores, schedules, prices, or market counts.
 
 ## Reference Notes
 

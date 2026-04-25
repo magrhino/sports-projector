@@ -2,7 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CacheStatus } from "./cache.js";
 
 export interface ResearchToolResponse<TData> {
-  source: "espn" | "kalshi" | "calculation" | "historical";
+  source: "espn" | "kalshi" | "calculation" | "historical" | "live_projection";
   fetched_at: string;
   source_url: string | null;
   cache_status: CacheStatus;
