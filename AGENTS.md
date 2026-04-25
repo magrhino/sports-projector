@@ -8,12 +8,12 @@ Repo-local routing/context only. Do not repeat global Codex instructions. Global
 
 When asked to initialize, `/init`, personalize, or complete this file:
 
-- Inspect the repo only enough to replace `TODO_INIT` values below.
+- Inspect the repo only enough to replace initialization placeholders below.
 - Prefer targeted commands: `pwd`, `git status --short`, `find`/`ls`, `rg --files`, package/config manifests, README, CONTRIBUTING, existing tests, and nearest examples.
 - Do not read vendored deps, generated output, build artifacts, coverage, caches, binary assets, lockfiles, snapshots, or large data files unless required to identify commands.
 - Do not duplicate global policies on commits, security, validation, or final response format.
 - Preserve this file as a compact routing index, not a prose guide.
-- Replace every `TODO_INIT` with repo-specific facts.
+- Replace every initialization placeholder with repo-specific facts.
 - Delete sections that do not apply.
 - Keep `Path map` and `Repo commands` accurate over exhaustive.
 - Keep each local summary under 40 words.
@@ -22,7 +22,7 @@ When asked to initialize, `/init`, personalize, or complete this file:
 - After updating, report:
   - files inspected
   - sections changed
-  - unknowns left as `TODO_INIT`
+  - unknowns left as placeholders
   - suggested nested `AGENTS.md` files, if any
 
 Recommended init discovery order:
@@ -32,9 +32,7 @@ Recommended init discovery order:
 3. Identify install, lint, typecheck, test, build, and targeted-test commands from manifests/docs.
 4. Identify framework/language conventions from nearby files.
 5. Fill path map, task routing, invariants, commands, validation selection, and summaries.
-6. Remove this sentence after successful initialization: `TODO_INIT: file has not been personalized yet`.
-
-TODO_INIT: file has not been personalized yet.
+6. Confirm no initialization placeholders remain.
 
 ## Context budget
 
@@ -48,16 +46,25 @@ TODO_INIT: file has not been personalized yet.
 
 | Path | Purpose | Read first | Edit notes | Avoid unless required |
 |---|---|---|---|---|
-| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
-| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
-| `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` | `TODO_INIT` |
+| `src/index.ts`, `src/mcp/` | MCP stdio entrypoint and tool registration | `src/mcp/server.ts`, `tests/mcp-server-tools.test.ts` | Keep documented tool names aligned with README/tests. | `dist/` |
+| `src/clients/` | Public ESPN and Kalshi HTTP clients | Client file, `src/lib/http.ts`, URL validation tests | Build URLs from validated path/query parts only. | Live network tests unless requested |
+| `src/tools/` | General MCP tools for ESPN, Kalshi, and calculations | Owning tool file plus matching `tests/*.test.ts` | Preserve read-only research semantics and caveats. | Unrelated tool families |
+| `src/nba/` | NBA live and historical TypeScript bridge/tools | Owning `src/nba/*.ts`, relevant NBA tests | Historical bridge shells to Python via configured executable. | Local operator artifacts |
+| `src/lib/` | Shared cache, HTTP, response, validation helpers | Owning helper and direct callers | Shared behavior; run focused tests for consumers. | Broad rewrites |
+| `python/nba_historical_projection/` | Historical projection artifact CLI, dataset, features, models, training | Owning module and `python/tests/test_nba_historical_projection.py` | Use `PYTHONPATH=python`; generated state belongs in artifact dirs. | External source datasets |
+| `tests/`, `python/tests/` | Vitest and unittest coverage | Nearest matching test | Prefer focused additions for changed behavior. | Snapshots/fixtures unrelated to change |
+| `fixtures/nba-historical-linear/` | Tiny deterministic historical model fixture | `manifest.json` only if fixture behavior changes | Keep fixture small and packageable. | Large model/data artifacts |
+| `README.md`, `docs/nba/reference/` | User docs and NBA reference notes | Relevant section only | README documents public tool contract and commands. | Reference scratch files unless task matches |
+| `package.json`, `tsconfig.json`, `.gitignore` | Node package, TypeScript build, ignored/generated paths | Exact config being changed | Package uses npm, NodeNext ESM, Node >=18.17. | Lockfile unless dependency work requires it |
 
 ## Task routing
 
-- API/server behavior: inspect `TODO_INIT`, called service/module, validation/schema, and matching tests.
-- UI/client behavior: inspect `TODO_INIT`, nearest component, direct caller/callee if needed, style pattern, and matching tests/stories.
-- DB/data behavior: inspect `TODO_INIT`, query/model, callers, migration policy, and focused tests.
-- CLI/script behavior: inspect `TODO_INIT`, entrypoint, caller, README/docs reference, and tests.
+- MCP server/tool registration: inspect `src/mcp/server.ts`, the owning `src/tools/` or `src/nba/` module, README tool docs, and `tests/mcp-server-tools.test.ts`.
+- ESPN/Kalshi behavior: inspect the owning `src/clients/` file, related `src/tools/` wrapper, `src/lib/validation.ts`, and focused tests.
+- Calculation behavior: inspect `src/tools/calculations.ts` and `tests/calculations.test.ts`.
+- NBA live projection: inspect `src/nba/live-projection.ts`, `src/nba/live-tool.ts`, ESPN/Kalshi clients if touched, and `tests/nba-live-projection.test.ts`.
+- NBA historical TypeScript bridge: inspect `src/nba/historical-client.ts`, `src/nba/historical-tool.ts`, fixture manifest, and `tests/nba-historical.test.ts`.
+- Python historical CLI/model behavior: inspect owning `python/nba_historical_projection/` module and `python/tests/test_nba_historical_projection.py`.
 - Config/build/CI behavior: inspect exact changed config plus command/workflow that consumes it.
 - Test-only work: inspect target behavior and nearest existing test style; avoid production edits unless needed.
 - Docs-only work: inspect relevant doc plus source only if verifying behavior.
@@ -65,23 +72,25 @@ TODO_INIT: file has not been personalized yet.
 
 ## Key invariants
 
-- `TODO_INIT`
-- `TODO_INIT`
-- `TODO_INIT`
+- MCP tools are read-only informational research; do not add trading, auth, portfolio, bet ranking, or betting advice behavior.
+- Public network access is limited to ESPN and Kalshi public unauthenticated endpoints assembled from validated components.
+- Historical NBA prediction reads local artifact directories only; generated `data/historical/` state is operator-managed and not packaged.
+- TypeScript is strict NodeNext ESM; source imports use `.js` extensions for emitted runtime paths.
 
 ## Repo commands
 
-Fill exact commands from manifests/docs. Use package manager already used by repo.
-
 | Purpose | Command |
 |---|---|
-| install | `TODO_INIT` |
-| lint | `TODO_INIT` |
-| typecheck | `TODO_INIT` |
-| unit tests | `TODO_INIT` |
-| targeted test | `TODO_INIT` |
-| build | `TODO_INIT` |
-| format check | `TODO_INIT` |
+| install | `npm install` |
+| lint | Not defined in `package.json` |
+| typecheck | `npm run build` |
+| unit tests | `npm test` |
+| targeted TS test | `npm test -- tests/<name>.test.ts` |
+| targeted Python test | `PYTHONPATH=python python3 -m unittest python.tests.test_nba_historical_projection` |
+| Python test suite | `PYTHONPATH=python python3 -m unittest discover -s python/tests` |
+| MCP dev server | `npm run mcp` |
+| build | `npm run build` |
+| format check | Not defined in `package.json` |
 
 ## Validation selection
 
@@ -97,29 +106,26 @@ Fill exact commands from manifests/docs. Use package manager already used by rep
 
 Keep each under 40 words. Summaries are for routing, not documentation.
 
-- `TODO_INIT`: `TODO_INIT`
-- `TODO_INIT`: `TODO_INIT`
-- `TODO_INIT`: `TODO_INIT`
-
-## Deferred context files
-
-Create these only if useful. Open only when trigger matches.
-
-| Trigger | File |
-|---|---|
-| architecture or cross-module design | `docs/agents/architecture.md` |
-| testing strategy, fixtures, or flaky tests | `docs/agents/testing.md` |
-| debugging production-like failures | `docs/agents/debugging.md` |
-| release, versioning, changelog, packaging | `docs/agents/release.md` |
-| security-sensitive code paths | `docs/agents/security.md` |
+- `src/clients`: Public ESPN/Kalshi HTTP clients with TTL/cache and URL safety helpers.
+- `src/tools`: MCP tool wrappers for ESPN, Kalshi, and transparent calculation helpers.
+- `src/nba`: NBA-specific live projection logic and Python historical bridge.
+- `src/lib`: Shared cache, HTTP, response, and validation utilities.
+- `tests`: Vitest coverage for TypeScript tools, clients, normalization, cache, validation, and projections.
+- `python/nba_historical_projection`: Python CLI and model/artifact code for local NBA historical projections.
+- `python/tests`: unittest coverage for Python artifact validation, CLI, dataset, and prediction contracts.
+- `fixtures/nba-historical-linear`: Small linear-model fixture used by historical projection tests.
 
 ## Generated/low-value paths
 
 Do not read or edit unless directly required.
 
-- `TODO_INIT`
-- `TODO_INIT`
-- `TODO_INIT`
+- `node_modules/`
+- `dist/`
+- `coverage/`
+- `.env`, `.env.*`
+- `__pycache__/`, `*.py[cod]`
+- `data/historical/`
+- `package-lock.json` unless dependency changes require it
 
 ## Nested AGENTS suggestions
 
@@ -127,7 +133,8 @@ During initialization, add suggested nested files here if local rules would mate
 
 | Path | Why nested guidance may help |
 |---|---|
-| `TODO_INIT` | `TODO_INIT` |
+| `src/nba/` | Add only if live and historical projection rules diverge enough to need local guidance. |
+| `python/nba_historical_projection/` | Add only if Python artifact/training workflows grow more specialized. |
 
 ## Edit discipline
 

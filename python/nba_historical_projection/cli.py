@@ -14,6 +14,8 @@ from .artifacts import (
     write_state_manifest,
 )
 from .models import predict_from_artifacts
+from .providers.sportsdb import DEFAULT_RATE_LIMIT_PER_MINUTE, DEFAULT_SPORTSDB_API_KEY
+from .sportsdb_import import import_sportsdb_artifacts
 from .training import train_xgboost_regressors
 
 
@@ -62,6 +64,27 @@ def main(argv: list[str] | None = None) -> int:
     train_parser.add_argument("--source-ref", default="master")
     train_parser.add_argument("--season", action="append", default=[])
     train_parser.add_argument("--test-size", type=float, default=0.1)
+
+    sportsdb_parser = subparsers.add_parser(
+        "import-sportsdb",
+        help="Import NBA historical artifacts from TheSportsDB v1 and train local linear models",
+    )
+    sportsdb_parser.add_argument("--artifact-dir", default="data/historical")
+    sportsdb_parser.add_argument("--sport", default="nba", choices=["nba"])
+    sportsdb_parser.add_argument("--api-key", default=DEFAULT_SPORTSDB_API_KEY)
+    sportsdb_parser.add_argument("--season", action="append", default=[])
+    sportsdb_parser.add_argument("--lookback-seasons", type=int, default=None)
+    sportsdb_parser.add_argument("--rate-limit-per-minute", type=int, default=DEFAULT_RATE_LIMIT_PER_MINUTE)
+    sportsdb_parser.add_argument(
+        "--no-write-state",
+        action="store_true",
+        help="Do not write artifact_manifest.json after import.",
+    )
+    sportsdb_parser.add_argument(
+        "--no-log-run",
+        action="store_true",
+        help="Do not append an import-sportsdb entry to artifact_import_log.jsonl.",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -124,6 +147,19 @@ def main(argv: list[str] | None = None) -> int:
                 "source_ref": args.source_ref,
                 "seasons": args.season,
             })
+            write_json(result)
+            return 0
+        if args.command == "import-sportsdb":
+            result = import_sportsdb_artifacts(
+                artifact_dir=args.artifact_dir,
+                sport=args.sport,
+                api_key=args.api_key,
+                seasons=args.season,
+                lookback_seasons=args.lookback_seasons,
+                rate_limit_per_minute=args.rate_limit_per_minute,
+                write_state=not args.no_write_state,
+                log_run=not args.no_log_run,
+            )
             write_json(result)
             return 0
     except (ArtifactError, KeyError, TypeError, ValueError, RuntimeError) as exc:

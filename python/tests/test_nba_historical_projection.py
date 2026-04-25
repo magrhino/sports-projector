@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
@@ -17,6 +19,20 @@ from nba_historical_projection.artifacts import (
 from nba_historical_projection.cli import main as cli_main
 from nba_historical_projection.dataset import build_game_record
 from nba_historical_projection.models import derive_team_scores, predict_from_artifacts
+from nba_historical_projection.providers.sportsdb import (
+    DEFAULT_SPORTSDB_API_KEY,
+    SportsDbRateLimiter,
+    build_sportsdb_url,
+)
+from nba_historical_projection.sportsdb_import import (
+    TRAINING_TABLE,
+    SportsDbGame,
+    build_training_and_snapshots,
+    import_sportsdb_artifacts,
+    parse_games,
+    recent_nba_seasons,
+    select_seasons,
+)
 from nba_historical_projection.training import build_feature_defaults_from_frame
 
 
@@ -196,9 +212,233 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertNotIn("stake", serialized)
             self.assertNotIn("wager", serialized)
 
+    def test_sportsdb_url_defaults_to_public_test_key(self):
+        url = build_sportsdb_url(
+            DEFAULT_SPORTSDB_API_KEY,
+            "eventsseason.php",
+            {"id": "4387", "s": "2025-2026"},
+        )
+
+        self.assertEqual(
+            url,
+            "https://www.thesportsdb.com/api/v1/json/123/eventsseason.php?id=4387&s=2025-2026",
+        )
+
+    def test_sportsdb_rate_limiter_spaces_requests(self):
+        current = {"value": 0.0}
+        sleeps = []
+
+        def clock():
+            return current["value"]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            current["value"] += seconds
+
+        limiter = SportsDbRateLimiter(requests_per_minute=30, clock=clock, sleep=sleep)
+
+        limiter.wait()
+        current["value"] += 0.5
+        limiter.wait()
+        limiter.wait_after_429()
+
+        self.assertAlmostEqual(sleeps[0], 1.5)
+        self.assertEqual(sleeps[1], 65.0)
+
+    def test_sportsdb_selects_recent_present_day_seasons_by_default(self):
+        self.assertEqual(
+            recent_nba_seasons(6, today=datetime(2026, 4, 25)),
+            ["2020-2021", "2021-2022", "2022-2023", "2023-2024", "2024-2025", "2025-2026"],
+        )
+
+    def test_sportsdb_default_selection_ignores_stale_provider_season_list(self):
+        self.assertEqual(
+            select_seasons(
+                ["1960-1961", "1961-1962", "1962-1963", "1963-1964", "1964-1965"],
+                requested=[],
+                lookback_seasons=3,
+                sport="nba",
+                today=datetime(2026, 4, 25),
+            ),
+            ["2023-2024", "2024-2025", "2025-2026"],
+        )
+
+    def test_sportsdb_parser_skips_future_games_without_scores(self):
+        games = parse_games(
+            {
+                "events": [
+                    {
+                        "idEvent": "1",
+                        "strSeason": "2025-2026",
+                        "dateEvent": "2025-10-21",
+                        "strHomeTeam": "Boston Celtics",
+                        "strAwayTeam": "New York Knicks",
+                        "intHomeScore": "114",
+                        "intAwayScore": "107",
+                    },
+                    {
+                        "idEvent": "2",
+                        "strSeason": "2025-2026",
+                        "dateEvent": "2026-04-25",
+                        "strHomeTeam": "Boston Celtics",
+                        "strAwayTeam": "Brooklyn Nets",
+                        "intHomeScore": None,
+                        "intAwayScore": None,
+                    },
+                ]
+            },
+            fallback_season="2025-2026",
+        )
+
+        self.assertEqual(len(games), 2)
+        self.assertTrue(games[0].is_final)
+        self.assertFalse(games[1].is_final)
+
+    def test_sportsdb_import_writes_manifest_models_and_local_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+            )
+
+            self.assertTrue(result["validation"]["ok"])
+            self.assertEqual(result["final_games"], 4)
+            self.assertTrue((root / "manifest.json").is_file())
+            self.assertTrue((root / "artifact_manifest.json").is_file())
+            self.assertTrue((root / "artifact_import_log.jsonl").is_file())
+            self.assertTrue((root / "models" / "total_score.json").is_file())
+            self.assertTrue((root / "sportsdb" / "normalized" / "nba_games.sqlite").is_file())
+            self.assertTrue((root / "sportsdb" / "normalized" / "nba_team_stats.sqlite").is_file())
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["source"]["type"], "sportsdb_v1")
+            self.assertEqual(manifest["source"]["api_key"], "123")
+            self.assertEqual(manifest["source"]["rate_limit_per_minute"], 30)
+            self.assertEqual(manifest["team_stats"]["type"], "sqlite")
+            self.assertIn("PRIOR_GAMES", manifest["feature_columns"])
+            self.assertIn("PRIOR_GAMES.1", manifest["feature_columns"])
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-04-25",
+                    "include_debug": True,
+                },
+            )
+            self.assertIn("projected_total", projection)
+            self.assertEqual(projection["artifact"]["source"]["type"], "sportsdb_v1")
+
+    def test_sportsdb_import_default_uses_recent_seasons_when_provider_lists_old_samples(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                lookback_seasons=1,
+                client=FakeSportsDbClient(stale_season_list=True),
+            )
+
+            self.assertEqual(result["seasons"], ["2025-2026"])
+
+    def test_sportsdb_training_features_reset_at_season_boundaries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_path = root / "games.sqlite"
+            team_stats_path = root / "team_stats.sqlite"
+
+            build_training_and_snapshots(
+                [
+                    SportsDbGame("1", "2024-2025", "2025-04-15", "Boston Celtics", "New York Knicks", 120, 110),
+                    SportsDbGame("2", "2025-2026", "2025-10-21", "Boston Celtics", "New York Knicks", 100, 90),
+                ],
+                ["Boston Celtics", "New York Knicks"],
+                dataset_path,
+                team_stats_path,
+            )
+
+            with sqlite3.connect(dataset_path) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2025-10-21",),
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(row["PRIOR_GAMES"], 0.0)
+            self.assertEqual(row["PRIOR_GAMES.1"], 0.0)
+            self.assertEqual(row["DAYS_REST"], 7.0)
+            self.assertEqual(row["DAYS_REST.1"], 7.0)
+
     def write_json(self, path: Path, value):
         with path.open("w", encoding="utf-8") as handle:
             json.dump(value, handle)
+
+
+class FakeSportsDbClient:
+    def __init__(self, stale_season_list=False):
+        self.stale_season_list = stale_season_list
+
+    def fetch_all_seasons(self, league_id: str):
+        self.assert_nba_league(league_id)
+        if self.stale_season_list:
+            return {
+                "seasons": [
+                    {"strSeason": "1960-1961"},
+                    {"strSeason": "1961-1962"},
+                    {"strSeason": "1962-1963"},
+                    {"strSeason": "1963-1964"},
+                    {"strSeason": "1964-1965"},
+                ]
+            }
+        return {
+            "seasons": [
+                {"strSeason": "2024-2025"},
+                {"strSeason": "2025-2026"},
+            ]
+        }
+
+    def fetch_all_teams(self, league_name: str):
+        if league_name != "NBA":
+            raise AssertionError(f"unexpected league: {league_name}")
+        return {
+            "teams": [
+                {"strTeam": "Boston Celtics"},
+                {"strTeam": "New York Knicks"},
+                {"strTeam": "Brooklyn Nets"},
+            ]
+        }
+
+    def fetch_season_events(self, league_id: str, season: str):
+        self.assert_nba_league(league_id)
+        if season != "2025-2026":
+            raise AssertionError(f"unexpected season: {season}")
+        return {
+            "events": [
+                self.event("1001", "2025-10-21", "Boston Celtics", "New York Knicks", 114, 107),
+                self.event("1002", "2025-10-22", "Brooklyn Nets", "Boston Celtics", 98, 106),
+                self.event("1003", "2025-10-24", "New York Knicks", "Brooklyn Nets", 109, 101),
+                self.event("1004", "2025-10-26", "Boston Celtics", "Brooklyn Nets", 111, 104),
+                self.event("1005", "2026-04-25", "Boston Celtics", "New York Knicks", None, None),
+            ]
+        }
+
+    def event(self, event_id, date, home, away, home_score, away_score):
+        return {
+            "idEvent": event_id,
+            "strSeason": "2025-2026",
+            "dateEvent": date,
+            "strHomeTeam": home,
+            "strAwayTeam": away,
+            "intHomeScore": None if home_score is None else str(home_score),
+            "intAwayScore": None if away_score is None else str(away_score),
+        }
+
+    def assert_nba_league(self, league_id: str):
+        if league_id != "4387":
+            raise AssertionError(f"unexpected league id: {league_id}")
 
 
 if __name__ == "__main__":

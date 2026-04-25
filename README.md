@@ -111,6 +111,7 @@ All configuration is optional.
 Historical artifact commands:
 
 ```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection inventory-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical --write-state --log-run
@@ -131,25 +132,23 @@ The local generated state files are:
 - `data/historical/artifact_manifest.json`: inventory of local model/team-stat artifacts, feature counts, file sizes, date-table ranges when SQLite team stats are configured, and validation status.
 - `data/historical/artifact_import_log.jsonl`: append-only summaries for validation and training runs.
 
-Raw historical NBA backfill is intentionally delegated to the source data project. In `magrhino/NBA-Machine-Learning-Sports-Betting`, use its README-guided commands:
+SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports.
 
 ```bash
-cd src/Process-Data
-python -m Get_Data --backfill
-python -m Get_Odds_Data --backfill
-python -m Create_Games
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical
 ```
 
-For a single season:
+To pin seasons explicitly:
 
 ```bash
-cd src/Process-Data
-python -m Get_Data --backfill --season 2025-26
-python -m Get_Odds_Data --backfill --season 2025-26
-python -m Create_Games
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --season 2024-2025 \
+  --season 2025-2026
 ```
 
-Current-season refresh in the source project uses the same modules without `--backfill`. `Create_Games` replaces its configured dataset table, so validate the upstream SQLite artifacts before retraining local models from that dataset.
+SportsDB import is intentionally present-day weighted by default. Use `--lookback-seasons` to widen or narrow the rolling history. The importer uses only pregame features derived from prior completed games for each training row; future scheduled games can create prediction snapshot tables but are excluded from model targets until scores are available.
 
 Training historical XGBoost regressors from a prepared SQLite dataset requires Python packages from the adapted historical stack, including `pandas`, `numpy`, and `xgboost`:
 
@@ -172,6 +171,7 @@ Allowed network origins:
 
 - `https://site.api.espn.com`
 - `https://api.elections.kalshi.com`
+- `https://www.thesportsdb.com` for the offline historical import command only
 
 v1 builds URLs from known path segments and validated query/path parameters only. User input is not treated as a URL.
 

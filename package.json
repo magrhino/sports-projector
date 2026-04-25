@@ -12,6 +12,7 @@
     "dist",
     "fixtures/nba-historical-linear",
     "python/nba_historical_projection/*.py",
+    "python/nba_historical_projection/**/*.py",
     "README.md"
   ],
   "scripts": {
