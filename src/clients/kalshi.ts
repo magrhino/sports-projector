@@ -12,6 +12,9 @@ interface KalshiClientOptions extends FetchJsonOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+const DEFAULT_MARKETS_LIMIT = 20;
+const MAX_QUERY_MARKET_PAGES = 5;
+
 export interface NormalizedKalshiMarket {
   ticker: string | null;
   title: string | null;
@@ -108,6 +111,11 @@ export class KalshiClient {
     seriesTicker?: string;
     eventTicker?: string;
   }): Promise<CachedFetch<unknown>> {
+    const query = input.query?.trim();
+    if (query) {
+      return this.searchMarketsByQuery({ ...input, query });
+    }
+
     const url = buildKalshiMarketsUrl(input);
     return this.fetchCached(url);
   }
@@ -137,6 +145,61 @@ export class KalshiClient {
       cacheStatus: result.status,
       data: result.value as T,
       sourceUrl: key
+    };
+  }
+
+  private async searchMarketsByQuery(input: {
+    query: string;
+    limit?: number;
+    cursor?: string;
+    status?: string;
+    seriesTicker?: string;
+    eventTicker?: string;
+  }): Promise<CachedFetch<unknown>> {
+    const requestedLimit = normalizeMarketSearchLimit(input.limit);
+    const matches: unknown[] = [];
+    const cacheStatuses: CacheStatus[] = [];
+    let cursor = input.cursor;
+    let nextCursor: string | null = null;
+    let sourceUrl: string | null = null;
+
+    for (let page = 0; page < MAX_QUERY_MARKET_PAGES && matches.length < requestedLimit; page += 1) {
+      const url = buildKalshiMarketsUrl({
+        ...input,
+        limit: requestedLimit - matches.length,
+        cursor
+      });
+      sourceUrl ??= url.toString();
+
+      const result = await this.fetchCached<Record<string, unknown>>(url);
+      cacheStatuses.push(result.cacheStatus);
+
+      const data = asRecord(result.data);
+      for (const rawMarket of asArray(data.markets)) {
+        const market = normalizeMarket(rawMarket);
+        if (marketMatchesQuery(market, input.query)) {
+          matches.push(rawMarket);
+          if (matches.length >= requestedLimit) {
+            break;
+          }
+        }
+      }
+
+      nextCursor = asString(data.cursor);
+      if (!nextCursor || nextCursor === cursor) {
+        break;
+      }
+
+      cursor = nextCursor;
+    }
+
+    return {
+      cacheStatus: combineCacheStatuses(cacheStatuses),
+      data: {
+        cursor: nextCursor,
+        markets: matches
+      },
+      sourceUrl: sourceUrl ?? buildKalshiMarketsUrl({ ...input, limit: requestedLimit }).toString()
     };
   }
 }
@@ -303,7 +366,7 @@ function normalizeOrderbookLevels(rawLevels: unknown[], valuesAreDollars: boolea
 }
 
 function marketMatchesQuery(market: NormalizedKalshiMarket, query: string): boolean {
-  const normalizedQuery = query.toLowerCase();
+  const normalizedQuery = query.trim().toLowerCase();
   return [
     market.ticker,
     market.title,
@@ -311,6 +374,30 @@ function marketMatchesQuery(market: NormalizedKalshiMarket, query: string): bool
     market.event_ticker,
     market.series_ticker
   ].some((field) => field?.toLowerCase().includes(normalizedQuery));
+}
+
+function normalizeMarketSearchLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return DEFAULT_MARKETS_LIMIT;
+  }
+
+  return Math.min(100, Math.max(1, Math.floor(limit)));
+}
+
+function combineCacheStatuses(statuses: CacheStatus[]): CacheStatus {
+  if (statuses.includes("miss")) {
+    return "miss";
+  }
+
+  if (statuses.includes("bypass")) {
+    return "bypass";
+  }
+
+  if (statuses.includes("hit")) {
+    return "hit";
+  }
+
+  return "not_applicable";
 }
 
 function numberFromValue(value: unknown): number | null {
