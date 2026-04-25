@@ -12,7 +12,9 @@ import {
   buildKalshiTradesUrl
 } from "../src/clients/kalshi.js";
 import {
+  EspnDateSchema,
   EventIdSchema,
+  IsoDateSchema,
   KalshiTickerSchema,
   LeagueSchema,
   SafeSearchTextSchema,
@@ -60,5 +62,14 @@ describe("input validation", () => {
     expect(() => SafeSearchTextSchema.parse("http://example.com")).toThrow();
     expect(() => EventIdSchema.parse("401/evil")).toThrow();
     expect(() => KalshiTickerSchema.parse("KXTEST/evil")).toThrow();
+  });
+
+  it("rejects impossible calendar dates", () => {
+    expect(EspnDateSchema.parse("2024-02-29")).toBe("20240229");
+    expect(EspnDateSchema.parse("20240229")).toBe("20240229");
+    expect(IsoDateSchema.parse("2024-02-29")).toBe("2024-02-29");
+    expect(() => EspnDateSchema.parse("20260231")).toThrow();
+    expect(() => EspnDateSchema.parse("2026-99-99")).toThrow();
+    expect(() => IsoDateSchema.parse("2026-02-31")).toThrow();
   });
 });

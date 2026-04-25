@@ -5,7 +5,7 @@ import {
   HistoricalProjectionError
 } from "./historical-client.js";
 import { makeResponse, nowIso } from "../lib/response.js";
-import { TeamQuerySchema } from "../lib/validation.js";
+import { IsoDateSchema, TeamQuerySchema } from "../lib/validation.js";
 
 const HISTORICAL_CAVEATS = [
   "Informational projection only.",
@@ -38,10 +38,7 @@ interface HistoricalErrorData {
 export const HistoricalProjectionInputSchema = z.object({
   home_team: TeamQuerySchema,
   away_team: TeamQuerySchema,
-  game_date: z
-    .string()
-    .trim()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "game_date must be YYYY-MM-DD"),
+  game_date: IsoDateSchema,
   season: z
     .string()
     .trim()

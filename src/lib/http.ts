@@ -35,6 +35,7 @@ export async function fetchJson<T>(url: URL, options: FetchJsonOptions = {}): Pr
   try {
     const response = await fetchImpl(url, {
       method: "GET",
+      redirect: "manual",
       headers: {
         accept: "application/json"
       },

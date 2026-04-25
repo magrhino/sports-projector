@@ -28,6 +28,28 @@ describe("fetchJson", () => {
     expect(seenHeaders[0].has("kalshi-access-timestamp")).toBe(false);
   });
 
+  it("does not follow HTTP redirects", async () => {
+    const seenRedirectModes: Array<RequestRedirect | undefined> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      seenRedirectModes.push(init?.redirect);
+      return new Response(null, {
+        status: 302,
+        statusText: "Found",
+        headers: {
+          location: "https://example.com/markets"
+        }
+      });
+    };
+
+    await expect(
+      fetchJson(new URL("https://api.elections.kalshi.com/trade-api/v2/markets?limit=1"), {
+        fetchImpl,
+        timeoutMs: 1000
+      })
+    ).rejects.toThrow("302 Found");
+    expect(seenRedirectModes).toEqual(["manual"]);
+  });
+
   it("blocks non-allowlisted origins", async () => {
     await expect(fetchJson(new URL("https://example.com/markets"), { timeoutMs: 1000 })).rejects.toThrow(
       "Blocked non-allowlisted URL origin"
@@ -60,6 +82,34 @@ describe("TtlCache", () => {
     expect(second).toEqual({ status: "hit", value: 1 });
     expect(third).toEqual({ status: "miss", value: 3 });
     expect(loads).toBe(2);
+  });
+
+  it("sweeps expired entries when setting a new value", async () => {
+    let now = 1000;
+    const cache = new TtlCache<number>(50, () => now, 10);
+
+    await cache.getOrSet("a", async () => 1);
+    await cache.getOrSet("b", async () => 2);
+    now = 1051;
+    await cache.getOrSet("c", async () => 3);
+
+    expect(cache.size()).toBe(1);
+    expect(cache.get("a").status).toBe("miss");
+    expect(cache.get("b").status).toBe("miss");
+    expect(cache.get("c")).toEqual({ status: "hit", value: 3 });
+  });
+
+  it("evicts the oldest entries at the configured size cap", async () => {
+    const cache = new TtlCache<number>(1000, () => 1000, 2);
+
+    await cache.getOrSet("a", async () => 1);
+    await cache.getOrSet("b", async () => 2);
+    await cache.getOrSet("c", async () => 3);
+
+    expect(cache.size()).toBe(2);
+    expect(cache.get("a").status).toBe("miss");
+    expect(cache.get("b")).toEqual({ status: "hit", value: 2 });
+    expect(cache.get("c")).toEqual({ status: "hit", value: 3 });
   });
 
   it("parses TTL env values with safe defaults and clamps", () => {

@@ -46,6 +46,13 @@ describe("HistoricalProjectionInputSchema", () => {
         game_date: "20260425"
       })
     ).toThrow();
+    expect(() =>
+      HistoricalProjectionInputSchema.parse({
+        home_team: "Boston Celtics",
+        away_team: "New York Knicks",
+        game_date: "2026-02-31"
+      })
+    ).toThrow();
   });
 });
 

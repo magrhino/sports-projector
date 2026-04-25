@@ -46,7 +46,14 @@ export const EspnDateSchema = z
   .string()
   .trim()
   .regex(/^\d{8}$|^\d{4}-\d{2}-\d{2}$/, "Date must be YYYYMMDD or YYYY-MM-DD")
-  .transform((value) => value.replaceAll("-", ""));
+  .transform((value) => value.replaceAll("-", ""))
+  .refine(isValidCompactDate, "Date must be a real calendar date");
+
+export const IsoDateSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+  .refine((value) => isValidCompactDate(value.replaceAll("-", "")), "Date must be a real calendar date");
 
 export const OptionalEspnDateSchema = EspnDateSchema.optional();
 
@@ -113,4 +120,40 @@ export function assertAllowlistedUrl(url: URL, allowedOrigins: readonly string[]
   if (!allowedOrigins.includes(url.origin)) {
     throw new Error(`Blocked non-allowlisted URL origin: ${url.origin}`);
   }
+}
+
+function isValidCompactDate(value: string): boolean {
+  if (!/^\d{8}$/.test(value)) {
+    return false;
+  }
+
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(4, 6));
+  const day = Number(value.slice(6, 8));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+  if (month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+
+  const daysInMonth = [
+    31,
+    isLeapYear(year) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31
+  ];
+  return day <= daysInMonth[month - 1];
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }
