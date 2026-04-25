@@ -1,3 +1,7 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   HistoricalProjectionClient,
@@ -7,6 +11,10 @@ import {
   timeoutMsFromEnv
 } from "../src/nba/historical-client.js";
 import { HistoricalProjectionInputSchema } from "../src/nba/historical-tool.js";
+import { createServer } from "../src/mcp/server.js";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const FIXTURE_ARTIFACT_DIR = path.join(REPO_ROOT, "fixtures", "nba-historical-linear");
 
 describe("HistoricalProjectionInputSchema", () => {
   it("validates historical projection input", () => {
@@ -143,3 +151,87 @@ describe("HistoricalProjectionClient", () => {
     expect(text).not.toContain("recommend");
   });
 });
+
+describe("project_nba_historical_score MCP bridge", () => {
+  it("calls the Python CLI with the documented linear_json fixture artifacts", async () => {
+    const previousEnv = {
+      root: process.env.SPORTS_PROJECTOR_HISTORICAL_ROOT,
+      artifactDir: process.env.SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR,
+      timeoutMs: process.env.SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS
+    };
+    process.env.SPORTS_PROJECTOR_HISTORICAL_ROOT = REPO_ROOT;
+    process.env.SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR = FIXTURE_ARTIFACT_DIR;
+    process.env.SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS = "10000";
+
+    const server = createServer();
+    const client = new Client({
+      name: "sports-projector-historical-fixture-test",
+      version: "0.0.0"
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "project_nba_historical_score",
+        arguments: {
+          home_team: "Boston Celtics",
+          away_team: "New York Knicks",
+          game_date: "2026-04-25",
+          market_total: 221.5,
+          market_spread: 2.5,
+          days_rest_home: 3,
+          days_rest_away: 1,
+          include_debug: true
+        }
+      });
+
+      const response = result.structuredContent as {
+        source: string;
+        data: Record<string, unknown>;
+      };
+
+      expect(response.source).toBe("historical");
+      expect(response.data).toMatchObject({
+        projected_home_score: 114,
+        projected_away_score: 109.5,
+        projected_total: 223.5,
+        projected_home_margin: 4.5,
+        game_date: "2026-04-25"
+      });
+      expect(response.data.teams).toEqual({
+        home: "Boston Celtics",
+        away: "New York Knicks"
+      });
+      expect(response.data.market_comparison).toMatchObject({
+        market_total: 221.5,
+        difference_to_market_total: 2,
+        market_spread: 2.5,
+        difference_to_market_spread: 2
+      });
+      expect(response.data.debug).toMatchObject({
+        model_types: {
+          total_score: "linear_json",
+          home_margin: "linear_json"
+        }
+      });
+      expect(JSON.stringify(response).toLowerCase()).not.toContain("xgboost");
+    } finally {
+      await client.close();
+      await server.close();
+      restoreEnv("SPORTS_PROJECTOR_HISTORICAL_ROOT", previousEnv.root);
+      restoreEnv("SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR", previousEnv.artifactDir);
+      restoreEnv("SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS", previousEnv.timeoutMs);
+    }
+  });
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}

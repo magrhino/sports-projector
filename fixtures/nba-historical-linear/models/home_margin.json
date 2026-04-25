@@ -1,0 +1,9 @@
+{
+  "intercept": 0,
+  "coefficients": {
+    "OU": 0,
+    "Spread": 1,
+    "Days-Rest-Home": 1,
+    "Days-Rest-Away": -1
+  }
+}

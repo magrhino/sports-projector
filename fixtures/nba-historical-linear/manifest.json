@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-25T00:00:00+00:00",
+  "source": {
+    "type": "local_fixture",
+    "description": "Deterministic linear_json artifact for bridge validation; not a trained model."
+  },
+  "seasons": [
+    "fixture"
+  ],
+  "feature_columns": [
+    "OU",
+    "Spread",
+    "Days-Rest-Home",
+    "Days-Rest-Away"
+  ],
+  "feature_defaults": {
+    "OU": 222,
+    "Spread": 0,
+    "Days-Rest-Home": 2,
+    "Days-Rest-Away": 2
+  },
+  "models": {
+    "total_score": {
+      "type": "linear_json",
+      "path": "models/total_score.json",
+      "residual_stddev": 0
+    },
+    "home_margin": {
+      "type": "linear_json",
+      "path": "models/home_margin.json",
+      "residual_stddev": 0
+    }
+  }
+}

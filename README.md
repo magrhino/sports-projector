@@ -110,6 +110,15 @@ PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --arti
 PYTHONPATH=python python3 -m nba_historical_projection predict --artifact-dir data/historical < request.json
 ```
 
+The repository includes a tiny deterministic fixture artifact bundle at
+`fixtures/nba-historical-linear` for local validation. It uses `linear_json`
+models rather than generated XGBoost artifacts:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir fixtures/nba-historical-linear
+npm test -- tests/nba-historical.test.ts
+```
+
 The local generated state files are:
 
 - `data/historical/artifact_manifest.json`: inventory of local model/team-stat artifacts, feature counts, file sizes, date-table ranges when SQLite team stats are configured, and validation status.
