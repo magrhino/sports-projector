@@ -29,11 +29,17 @@ from nba_historical_projection.sportsdb_import import (
     SportsDbGame,
     build_training_and_snapshots,
     import_sportsdb_artifacts,
+    load_availability_csv,
+    load_market_lines_csv,
     parse_games,
     recent_nba_seasons,
     select_seasons,
 )
-from nba_historical_projection.training import build_feature_defaults_from_frame
+from nba_historical_projection.training import (
+    build_feature_defaults_from_frame,
+    finite_target_arrays,
+    split_index_for_rows,
+)
 
 
 class HistoricalProjectionTests(unittest.TestCase):
@@ -67,6 +73,16 @@ class HistoricalProjectionTests(unittest.TestCase):
         self.assertEqual(record["OU-Cover"], 1)
         self.assertEqual(record["PACE"], 99.1)
         self.assertEqual(record["PACE.1"], 97.4)
+
+    def test_xgboost_target_filter_drops_non_finite_labels(self):
+        target_x, target_y = finite_target_arrays(
+            [[1.0], [2.0], [3.0], [4.0]],
+            [220.0, float("nan"), 215.0, float("inf")],
+        )
+
+        self.assertEqual(target_x, [[1.0], [3.0]])
+        self.assertEqual(target_y, [220.0, 215.0])
+        self.assertEqual(split_index_for_rows(len(target_y), 0.9), 1)
 
     def test_validate_manifest_fails_when_model_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -186,8 +202,26 @@ class HistoricalProjectionTests(unittest.TestCase):
                     "feature_columns": ["HOME_POWER", "AWAY_POWER"],
                     "feature_defaults": {"HOME_POWER": 3, "AWAY_POWER": 2},
                     "models": {
-                        "total_score": {"type": "linear_json", "path": "models/total.json", "residual_stddev": 9},
-                        "home_margin": {"type": "linear_json", "path": "models/margin.json", "residual_stddev": 5},
+                        "total_score": {
+                            "type": "linear_json",
+                            "path": "models/total.json",
+                            "target_mode": "direct",
+                            "residual_stddev": 9,
+                            "uncertainty": {
+                                "calibration_source": "chronological_validation_residuals",
+                                "intervals": {"90": 12},
+                            },
+                        },
+                        "home_margin": {
+                            "type": "linear_json",
+                            "path": "models/margin.json",
+                            "target_mode": "direct",
+                            "residual_stddev": 5,
+                            "uncertainty": {
+                                "calibration_source": "chronological_validation_residuals",
+                                "intervals": {"90": 7},
+                            },
+                        },
                     },
                 },
             )
@@ -207,10 +241,81 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(result["projected_home_score"], 104.5)
             self.assertEqual(result["projected_away_score"], 103.5)
             self.assertEqual(result["uncertainty"]["total_score_residual_stddev"], 9.0)
+            self.assertEqual(result["uncertainty"]["total_score_interval_90"], [-12.0, 12.0])
+            self.assertEqual(result["uncertainty"]["home_margin_interval_90"], [-7.0, 7.0])
+            self.assertEqual(result["artifact"]["models"]["total_score"]["target_mode"], "direct")
             serialized = json.dumps(result).lower()
             self.assertNotIn("kelly", serialized)
             self.assertNotIn("stake", serialized)
             self.assertNotIn("wager", serialized)
+
+    def test_predict_reconstructs_market_residual_models(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "models").mkdir()
+            self.write_json(root / "models" / "total.json", {"intercept": 2, "coefficients": [0, 0]})
+            self.write_json(root / "models" / "margin.json", {"intercept": -1, "coefficients": [0, 0]})
+            self.write_json(
+                root / "manifest.json",
+                {
+                    "feature_columns": ["MARKET_TOTAL_CLOSE", "MARKET_SPREAD_CLOSE"],
+                    "feature_defaults": {"MARKET_TOTAL_CLOSE": 220, "MARKET_SPREAD_CLOSE": 3},
+                    "models": {
+                        "total_score": {
+                            "type": "linear_json",
+                            "path": "models/total.json",
+                            "target_mode": "market_residual",
+                            "uncertainty": {"intervals": {"90": 10}},
+                        },
+                        "home_margin": {
+                            "type": "linear_json",
+                            "path": "models/margin.json",
+                            "target_mode": "market_residual",
+                            "uncertainty": {"intervals": {"90": 6}},
+                        },
+                    },
+                },
+            )
+
+            result = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-04-25",
+                    "market_total": 221.5,
+                    "market_spread": 4.5,
+                },
+            )
+
+            self.assertEqual(result["projected_total"], 223.5)
+            self.assertEqual(result["projected_home_margin"], 3.5)
+            self.assertEqual(result["artifact"]["models"]["total_score"]["target_mode"], "market_residual")
+
+    def test_validate_manifest_rejects_malformed_uncertainty_interval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "models").mkdir()
+            self.write_json(root / "models" / "total.json", {"intercept": 200, "coefficients": [1]})
+            self.write_json(root / "models" / "margin.json", {"intercept": 0, "coefficients": [1]})
+            self.write_json(
+                root / "manifest.json",
+                {
+                    "feature_columns": ["POWER"],
+                    "feature_defaults": {"POWER": 1},
+                    "models": {
+                        "total_score": {
+                            "type": "linear_json",
+                            "path": "models/total.json",
+                            "uncertainty": {"intervals": {"90": -1}},
+                        },
+                        "home_margin": {"type": "linear_json", "path": "models/margin.json"},
+                    },
+                },
+            )
+
+            with self.assertRaisesRegex(ArtifactError, "interval width"):
+                validate_manifest(root)
 
     def test_sportsdb_url_defaults_to_public_test_key(self):
         url = build_sportsdb_url(
@@ -294,6 +399,33 @@ class HistoricalProjectionTests(unittest.TestCase):
         self.assertTrue(games[0].is_final)
         self.assertFalse(games[1].is_final)
 
+    def test_market_and_availability_csv_parsers_match_normalized_teams(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            market_path = root / "market_lines.csv"
+            availability_path = root / "availability.csv"
+            market_path.write_text(
+                "game_date,home_team,away_team,closing_total,closing_spread,opening_total,opening_spread\n"
+                "2025-10-21,Boston Celtics,New York Knicks,220.5,4.5,218.5,3.5\n",
+                encoding="utf-8",
+            )
+            availability_path.write_text(
+                "date,team,unavailable_minutes,unavailable_value\n"
+                "2025-10-21,Boston Celtics,32,5.5\n"
+                "2025-10-21,boston celtics,8,1.5\n",
+                encoding="utf-8",
+            )
+
+            market_lines = load_market_lines_csv(market_path)
+            availability = load_availability_csv(availability_path)
+
+            self.assertEqual(len(market_lines), 1)
+            market_line = next(iter(market_lines.values()))
+            self.assertEqual(market_line.closing_total, 220.5)
+            self.assertEqual(market_line.opening_spread, 3.5)
+            self.assertEqual(len(availability), 1)
+            self.assertEqual(next(iter(availability.values())).unavailable_minutes, 40.0)
+
     def test_sportsdb_import_writes_manifest_models_and_local_snapshots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -331,6 +463,55 @@ class HistoricalProjectionTests(unittest.TestCase):
             )
             self.assertIn("projected_total", projection)
             self.assertEqual(projection["artifact"]["source"]["type"], "sportsdb_v1")
+
+    def test_sportsdb_import_enriches_market_lines_and_availability(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            market_path = root / "market_lines.csv"
+            availability_path = root / "availability.csv"
+            market_path.write_text(
+                "game_date,home_team,away_team,closing_total,closing_spread,opening_total,opening_spread\n"
+                "2025-10-21,Boston Celtics,New York Knicks,220,6,218,5\n"
+                "2025-10-22,Brooklyn Nets,Boston Celtics,205,-7,204,-6\n"
+                "2025-10-24,New York Knicks,Brooklyn Nets,211,7,210,6\n"
+                "2025-10-26,Boston Celtics,Brooklyn Nets,214,8,213,7\n",
+                encoding="utf-8",
+            )
+            availability_path.write_text(
+                "date,team,unavailable_minutes,unavailable_value\n"
+                "2025-10-21,Boston Celtics,24,3\n"
+                "2025-10-22,Brooklyn Nets,18,2\n",
+                encoding="utf-8",
+            )
+
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                market_lines_csv=market_path,
+                availability_csv=availability_path,
+                model_kind="market-residual",
+                validation_splits=2,
+            )
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["market_line_matches"], 4)
+            self.assertEqual(manifest["data_sources"]["market_lines"]["matched_rows"], 4)
+            self.assertIn("MARKET_TOTAL_CLOSE", manifest["feature_columns"])
+            self.assertIn("HOME_UNAVAILABLE_MINUTES", manifest["feature_columns"])
+            self.assertNotIn("Total-Market-Residual", manifest["feature_columns"])
+            self.assertEqual(manifest["models"]["total_score"]["target_mode"], "market_residual")
+            self.assertIn("uncertainty", manifest["models"]["total_score"])
+
+            with sqlite3.connect(root / "sportsdb" / "normalized" / "nba_games.sqlite") as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2025-10-21",),
+                ).fetchone()
+            self.assertEqual(row["MARKET_TOTAL_CLOSE"], 220.0)
+            self.assertEqual(row["Total-Market-Residual"], 1.0)
+            self.assertEqual(row["HOME_UNAVAILABLE_MINUTES"], 24.0)
 
     def test_sportsdb_import_default_uses_recent_seasons_when_provider_lists_old_samples(self):
         with tempfile.TemporaryDirectory() as tmpdir:

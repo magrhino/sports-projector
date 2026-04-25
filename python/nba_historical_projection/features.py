@@ -98,6 +98,21 @@ def resolve_feature_value(
         return numeric_or_none(request.get("market_total", defaults.get(column)))
     if column == "Spread":
         return numeric_or_none(request.get("market_spread", defaults.get(column)))
+    if column == "MARKET_TOTAL_CLOSE":
+        return numeric_or_none(request.get("market_total", defaults.get(column)))
+    if column == "MARKET_SPREAD_CLOSE":
+        return numeric_or_none(request.get("market_spread", defaults.get(column)))
+    if column in {
+        "MARKET_TOTAL_OPEN",
+        "MARKET_SPREAD_OPEN",
+        "MARKET_TOTAL_MOVE",
+        "MARKET_SPREAD_MOVE",
+        "HOME_UNAVAILABLE_MINUTES",
+        "AWAY_UNAVAILABLE_MINUTES",
+        "HOME_UNAVAILABLE_VALUE",
+        "AWAY_UNAVAILABLE_VALUE",
+    }:
+        return numeric_or_none(defaults.get(column))
 
     if column.endswith(".1"):
         value = away_stats.get(column[:-2], away_stats.get(column))

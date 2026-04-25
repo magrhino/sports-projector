@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from .artifacts import ArtifactError, artifact_path, load_json, validate_manifest
 from .features import build_feature_vector
+from .training import baseline_feature_for
 
 
 class Predictor(Protocol):
@@ -43,10 +44,17 @@ class XGBoostJsonPredictor:
         self._xgb = xgb
         self._model = xgb.Booster()
         self._model.load_model(str(model_path))
+        best_iteration = config.get("best_iteration")
+        self._iteration_range = None
+        if best_iteration is not None:
+            self._iteration_range = (0, int(best_iteration) + 1)
 
     def predict(self, features: list[float], feature_columns: list[str]) -> float:
         matrix = self._xgb.DMatrix([features], feature_names=feature_columns)
-        prediction = self._model.predict(matrix)
+        if self._iteration_range is None:
+            prediction = self._model.predict(matrix)
+        else:
+            prediction = self._model.predict(matrix, iteration_range=self._iteration_range)
         return float(prediction[0])
 
 
@@ -82,6 +90,10 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     margin_model = load_predictor(root, models["home_margin"])
     projected_total = total_model.predict(features, feature_columns)
     projected_home_margin = margin_model.predict(features, feature_columns)
+    if models["total_score"].get("target_mode") == "market_residual":
+        projected_total += baseline_value("total_score", feature_values, request)
+    if models["home_margin"].get("target_mode") == "market_residual":
+        projected_home_margin += baseline_value("home_margin", feature_values, request)
 
     result = {
         **derive_team_scores(projected_total, projected_home_margin),
@@ -96,6 +108,16 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
             "generated_at": manifest.get("generated_at"),
             "seasons": manifest.get("seasons", []),
             "source": manifest.get("source", {}),
+            "models": {
+                "total_score": {
+                    "type": models["total_score"]["type"],
+                    "target_mode": models["total_score"].get("target_mode", "direct"),
+                },
+                "home_margin": {
+                    "type": models["home_margin"]["type"],
+                    "target_mode": models["home_margin"].get("target_mode", "direct"),
+                },
+            },
         },
         "caveats": [
             "Informational projection only.",
@@ -129,7 +151,43 @@ def collect_uncertainty(models: dict[str, Any]) -> dict[str, Any]:
         uncertainty["total_score_residual_stddev"] = float(total_stddev)
     if margin_stddev is not None:
         uncertainty["home_margin_residual_stddev"] = float(margin_stddev)
+    add_interval_uncertainty(uncertainty, "total_score", models["total_score"])
+    add_interval_uncertainty(uncertainty, "home_margin", models["home_margin"])
+    calibration_sources = sorted(
+        {
+            source
+            for model_config in (models["total_score"], models["home_margin"])
+            for source in [model_config.get("uncertainty", {}).get("calibration_source")]
+            if source
+        }
+    )
+    if calibration_sources:
+        uncertainty["calibration_source"] = ",".join(calibration_sources)
     return uncertainty
+
+
+def add_interval_uncertainty(
+    uncertainty: dict[str, Any],
+    model_key: str,
+    model_config: dict[str, Any],
+) -> None:
+    intervals = model_config.get("uncertainty", {}).get("intervals")
+    if not isinstance(intervals, dict) or "90" not in intervals:
+        return
+    width = float(intervals["90"])
+    field = "total_score_interval_90" if model_key == "total_score" else "home_margin_interval_90"
+    uncertainty[field] = [0.0, 0.0] if width == 0 else [-width, width]
+
+
+def baseline_value(
+    model_key: str,
+    feature_values: dict[str, float],
+    request: dict[str, Any],
+) -> float:
+    request_key = "market_total" if model_key == "total_score" else "market_spread"
+    if request.get(request_key) is not None:
+        return float(request[request_key])
+    return float(feature_values[baseline_feature_for(model_key)])
 
 
 def market_comparison_for_request(request: dict[str, Any], result: dict[str, Any]) -> dict[str, float] | None:

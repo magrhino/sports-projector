@@ -67,6 +67,7 @@ def validate_manifest(artifact_dir: str | Path, require_models: bool = True) -> 
             raise ArtifactError(f"manifest models.{model_key}.path must be a non-empty string")
         if require_models and not artifact_path(root, model_path).is_file():
             raise ArtifactError(f"Model artifact is missing for {model_key}: {artifact_path(root, model_path)}")
+        validate_model_uncertainty(model_key, model_config)
 
     team_stats = manifest.get("team_stats")
     if team_stats is not None:
@@ -129,6 +130,26 @@ def validate_feature_sources(
             "manifest must define feature_defaults for all feature_columns when team_stats is not configured: "
             + ", ".join(missing_defaults[:20])
         )
+
+
+def validate_model_uncertainty(model_key: str, model_config: dict[str, Any]) -> None:
+    target_mode = model_config.get("target_mode", "direct")
+    if target_mode not in {"direct", "market_residual"}:
+        raise ArtifactError(f"manifest models.{model_key}.target_mode must be direct or market_residual")
+
+    uncertainty = model_config.get("uncertainty")
+    if uncertainty is None:
+        return
+    if not isinstance(uncertainty, dict):
+        raise ArtifactError(f"manifest models.{model_key}.uncertainty must be an object when provided")
+    intervals = uncertainty.get("intervals", {})
+    if not isinstance(intervals, dict):
+        raise ArtifactError(f"manifest models.{model_key}.uncertainty.intervals must be an object")
+    for level, width in intervals.items():
+        if str(level) not in {"68", "80", "90"}:
+            raise ArtifactError(f"manifest models.{model_key}.uncertainty interval level is unsupported: {level}")
+        if not is_finite_number(width) or float(width) < 0:
+            raise ArtifactError(f"manifest models.{model_key}.uncertainty interval width must be non-negative")
 
 
 def is_finite_number(value: Any) -> bool:

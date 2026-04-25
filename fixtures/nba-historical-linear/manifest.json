@@ -24,12 +24,26 @@
     "total_score": {
       "type": "linear_json",
       "path": "models/total_score.json",
-      "residual_stddev": 0
+      "target_mode": "direct",
+      "residual_stddev": 0,
+      "uncertainty": {
+        "calibration_source": "fixture",
+        "intervals": {
+          "90": 0
+        }
+      }
     },
     "home_margin": {
       "type": "linear_json",
       "path": "models/home_margin.json",
-      "residual_stddev": 0
+      "target_mode": "direct",
+      "residual_stddev": 0,
+      "uncertainty": {
+        "calibration_source": "fixture",
+        "intervals": {
+          "90": 0
+        }
+      }
     }
   }
 }

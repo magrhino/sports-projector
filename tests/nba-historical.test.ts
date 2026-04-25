@@ -278,6 +278,21 @@ describe("project_nba_historical_score MCP bridge", () => {
           home_margin: "linear_json"
         }
       });
+      expect(response.data.uncertainty).toMatchObject({
+        total_score_interval_90: [0, 0],
+        home_margin_interval_90: [0, 0],
+        calibration_source: "fixture"
+      });
+      expect(response.data.artifact).toMatchObject({
+        models: {
+          total_score: {
+            target_mode: "direct"
+          },
+          home_margin: {
+            target_mode: "direct"
+          }
+        }
+      });
       expect(JSON.stringify(response).toLowerCase()).not.toContain("xgboost");
     } finally {
       await client.close();

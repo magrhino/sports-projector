@@ -115,6 +115,7 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb --artifac
 PYTHONPATH=python python3 -m nba_historical_projection inventory-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical --write-state --log-run
+PYTHONPATH=python python3 -m nba_historical_projection evaluate --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection predict --artifact-dir data/historical < request.json
 ```
 
@@ -150,6 +151,19 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
 
 SportsDB import is intentionally present-day weighted by default. Use `--lookback-seasons` to widen or narrow the rolling history. The importer uses only pregame features derived from prior completed games for each training row; future scheduled games can create prediction snapshot tables but are excluded from model targets until scores are available.
 
+Optional local CSVs can enrich the offline artifacts without adding live network origins:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --market-lines-csv market_lines.csv \
+  --availability-csv availability.csv \
+  --model-kind auto \
+  --validation-splits 3
+```
+
+`market_lines.csv` should include `game_date` or `date`, `home_team`, `away_team`, and any of `closing_total`, `closing_spread`, `opening_total`, or `opening_spread`. `availability.csv` should include `date`, `team`, and optional `unavailable_minutes` / `unavailable_value` aggregates. When closing market lines are present, training can select market-residual models and stores rolling-origin validation metrics plus calibrated 68/80/90 percent residual intervals in `manifest.json`.
+
 Training historical XGBoost regressors from a prepared SQLite dataset requires Python packages from the adapted historical stack, including `pandas`, `numpy`, and `xgboost`:
 
 ```bash
@@ -158,7 +172,10 @@ PYTHONPATH=python python3 -m nba_historical_projection train \
   --table dataset_2012-26 \
   --artifact-dir data/historical \
   --season 2012-13 \
-  --season 2025-26
+  --season 2025-26 \
+  --model-kind auto \
+  --early-stopping-rounds 25 \
+  --validation-splits 3
 ```
 
 The training dataset must include numeric `Score` and `Home-Margin` targets. Feature snapshots should contain only information available before game start.

@@ -64,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     train_parser.add_argument("--source-ref", default="master")
     train_parser.add_argument("--season", action="append", default=[])
     train_parser.add_argument("--test-size", type=float, default=0.1)
+    train_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="direct")
+    train_parser.add_argument("--early-stopping-rounds", type=int, default=25)
+    train_parser.add_argument("--validation-splits", type=int, default=3)
 
     sportsdb_parser = subparsers.add_parser(
         "import-sportsdb",
@@ -75,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--season", action="append", default=[])
     sportsdb_parser.add_argument("--lookback-seasons", type=int, default=None)
     sportsdb_parser.add_argument("--rate-limit-per-minute", type=int, default=DEFAULT_RATE_LIMIT_PER_MINUTE)
+    sportsdb_parser.add_argument("--market-lines-csv")
+    sportsdb_parser.add_argument("--availability-csv")
+    sportsdb_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="auto")
+    sportsdb_parser.add_argument("--validation-splits", type=int, default=3)
     sportsdb_parser.add_argument(
         "--no-write-state",
         action="store_true",
@@ -85,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not append an import-sportsdb entry to artifact_import_log.jsonl.",
     )
+
+    evaluate_parser = subparsers.add_parser("evaluate", help="Report historical artifact validation metrics")
+    evaluate_parser.add_argument("--artifact-dir", required=True)
 
     args = parser.parse_args(argv)
     try:
@@ -130,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
                 source_ref=args.source_ref,
                 seasons=args.season,
                 test_size=args.test_size,
+                model_kind=args.model_kind,
+                early_stopping_rounds=args.early_stopping_rounds,
+                validation_splits=args.validation_splits,
             )
             result = {
                 "ok": True,
@@ -159,8 +172,16 @@ def main(argv: list[str] | None = None) -> int:
                 rate_limit_per_minute=args.rate_limit_per_minute,
                 write_state=not args.no_write_state,
                 log_run=not args.no_log_run,
+                market_lines_csv=args.market_lines_csv,
+                availability_csv=args.availability_csv,
+                model_kind=args.model_kind,
+                validation_splits=args.validation_splits,
             )
             write_json(result)
+            return 0
+        if args.command == "evaluate":
+            manifest = validate_manifest(args.artifact_dir)
+            write_json(evaluation_summary(args.artifact_dir, manifest))
             return 0
     except (ArtifactError, KeyError, TypeError, ValueError, RuntimeError) as exc:
         write_json({"error": {"type": exc.__class__.__name__, "message": str(exc)}}, stream=sys.stderr)
@@ -189,6 +210,30 @@ def write_json(value: Any, stream=None) -> None:
         stream = sys.stdout
     json.dump(value, stream, indent=2, sort_keys=True)
     stream.write("\n")
+
+
+def evaluation_summary(artifact_dir: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    models = manifest.get("models", {})
+    return {
+        "ok": True,
+        "artifact_dir": str(Path(artifact_dir)),
+        "generated_at": manifest.get("generated_at"),
+        "data_sources": manifest.get("data_sources", {}),
+        "models": {
+            key: {
+                "type": config.get("type"),
+                "target_mode": config.get("target_mode", "direct"),
+                "residual_stddev": config.get("residual_stddev"),
+                "validation_rmse": config.get("validation_rmse"),
+                "validation_mae": config.get("validation_mae"),
+                "validation_rows": config.get("validation_rows"),
+                "validation": config.get("validation"),
+                "uncertainty": config.get("uncertainty"),
+            }
+            for key, config in models.items()
+            if isinstance(config, dict)
+        },
+    }
 
 
 if __name__ == "__main__":
