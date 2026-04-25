@@ -8,6 +8,20 @@ const resultsEl = document.querySelector("#results");
 const resultsTitle = document.querySelector("#results-title");
 const resultsCount = document.querySelector("#results-count");
 const resultsBody = document.querySelector("#results-body");
+const projectionDetailEl = document.querySelector("#projection-detail");
+const projectionTitleEl = document.querySelector("#projection-title");
+const projectionMetaEl = document.querySelector("#projection-meta");
+const projectionStatusEl = document.querySelector("#projection-status");
+const projectionErrorEl = document.querySelector("#projection-error");
+const projectionRefreshButton = document.querySelector("#projection-refresh");
+const projectionLiveEl = document.querySelector("#projection-live");
+const projectionHistoricalEl = document.querySelector("#projection-historical");
+
+let currentLeague = leagueSelect.value;
+let selectedGame = null;
+let selectedRow = null;
+let liveRefreshTimer = null;
+let projectionRequestInFlight = false;
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -20,6 +34,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   setLoading(true);
+  currentLeague = league;
   clearResults();
 
   try {
@@ -41,6 +56,14 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+projectionRefreshButton.addEventListener("click", () => {
+  if (!selectedGame) {
+    return;
+  }
+
+  void fetchProjection(selectedGame, "all");
+});
+
 function setLoading(isLoading) {
   searchButton.disabled = isLoading;
   statusEl.textContent = isLoading ? "Loading..." : "";
@@ -52,16 +75,18 @@ function showError(message) {
   errorEl.textContent = message;
   errorEl.hidden = false;
   resultsEl.hidden = true;
+  clearProjectionDetail();
 }
 
 function clearResults() {
   errorEl.hidden = true;
   resultsBody.replaceChildren();
   resultsEl.hidden = true;
+  clearProjectionDetail();
 }
 
 function renderResults(payload) {
-  const games = Array.isArray(payload.games) ? payload.games : [];
+  const games = sortGames(Array.isArray(payload.games) ? payload.games : []);
   const teamName = payload.team?.name || teamInput.value.trim();
 
   resultsTitle.textContent = teamName;
@@ -73,14 +98,275 @@ function renderResults(payload) {
 
 function renderGameRow(game, source) {
   const row = document.createElement("tr");
+  row.className = "clickable-row";
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  row.setAttribute("aria-label", `Open projections for ${game.name || game.short_name || "game"}`);
+  row.addEventListener("click", () => {
+    void selectGame(game, row);
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    void selectGame(game, row);
+  });
+
+  const sourceCell = cell(source.toUpperCase());
+  sourceCell.classList.add("source-cell");
   row.append(
     cell(formatDateTime(game.start_time)),
     teamCell(game.teams?.away),
     teamCell(game.teams?.home),
-    cell(formatScoreStatus(game)),
-    cell(source.toUpperCase())
+    statusCell(game),
+    sourceCell
   );
   return row;
+}
+
+async function selectGame(game, row) {
+  if (selectedRow) {
+    selectedRow.classList.remove("selected-row");
+    selectedRow.removeAttribute("aria-selected");
+  }
+
+  selectedGame = game;
+  selectedRow = row;
+  selectedRow.classList.add("selected-row");
+  selectedRow.setAttribute("aria-selected", "true");
+  clearLiveRefreshTimer();
+  resetProjectionDetail(game);
+
+  if (currentLeague !== "nba") {
+    showProjectionError("Projection detail is only available for NBA games.");
+    renderSection(projectionLiveEl, { status: "error", error: "NBA-only projection route." }, "live");
+    renderSection(projectionHistoricalEl, { status: "error", error: "NBA-only projection route." }, "historical");
+    return;
+  }
+
+  await fetchProjection(game, "all");
+  if (selectedGame?.id === game.id && isLiveGame(selectedGame)) {
+    liveRefreshTimer = window.setInterval(() => {
+      if (!selectedGame || projectionRequestInFlight) {
+        return;
+      }
+      void fetchProjection(selectedGame, "live");
+    }, 10000);
+  }
+}
+
+async function fetchProjection(game, scope) {
+  if (projectionRequestInFlight) {
+    return;
+  }
+
+  projectionRequestInFlight = true;
+  projectionRefreshButton.disabled = true;
+  projectionErrorEl.hidden = true;
+  projectionStatusEl.textContent = scope === "live" ? "Updating live projection..." : "Loading projections...";
+
+  try {
+    const params = new URLSearchParams({ event_id: game.id, scope });
+    const response = await fetch(`/api/nba/projections?${params.toString()}`, {
+      headers: { accept: "application/json" }
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Projection request failed.");
+    }
+    if (selectedGame?.id !== game.id) {
+      return;
+    }
+
+    renderProjectionPayload(payload, scope);
+  } catch (error) {
+    if (selectedGame?.id === game.id) {
+      showProjectionError(error instanceof Error ? error.message : String(error));
+    }
+  } finally {
+    if (selectedGame?.id === game.id) {
+      projectionRefreshButton.disabled = false;
+      projectionStatusEl.textContent = projectionStatusEl.textContent === "Loading projections..." ? "" : projectionStatusEl.textContent;
+    }
+    projectionRequestInFlight = false;
+  }
+}
+
+function renderProjectionPayload(payload, scope) {
+  const game = payload.game || selectedGame;
+  if (game) {
+    selectedGame = game;
+  }
+  if (!isLiveGame(game)) {
+    clearLiveRefreshTimer();
+  }
+  projectionTitleEl.textContent = game?.short_name || game?.name || `ESPN event ${payload.event_id}`;
+  projectionMetaEl.textContent = [
+    formatScoreStatus(game),
+    payload.event_id ? `ESPN event ${payload.event_id}` : null,
+    payload.fetched_at ? `Updated ${formatDateTime(payload.fetched_at)}` : null,
+    isLiveGame(game) ? "Auto-refreshes every 10 seconds" : null
+  ]
+    .filter(Boolean)
+    .join(" | ");
+  projectionStatusEl.textContent = payload.fetched_at ? `Updated ${formatDateTime(payload.fetched_at)}.` : "";
+
+  if (payload.live_projection) {
+    renderSection(projectionLiveEl, payload.live_projection, "live");
+  }
+  if (scope === "all" && payload.historical_projection) {
+    renderSection(projectionHistoricalEl, payload.historical_projection, "historical");
+  }
+}
+
+function renderSection(container, section, kind) {
+  container.classList.remove("muted");
+  container.replaceChildren();
+
+  if (section.status !== "ok") {
+    container.classList.add("muted");
+    container.textContent = section.error || "Projection unavailable.";
+    return;
+  }
+
+  const data = section.data || {};
+  const metrics = kind === "live" ? liveMetrics(data) : historicalMetrics(data);
+  if (metrics.length === 0) {
+    container.classList.add("muted");
+    container.textContent = "Projection unavailable.";
+    return;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "metric-grid";
+  grid.append(...metrics.map((metric) => metricEl(metric.label, metric.value)));
+  container.append(grid);
+
+  const note = projectionNote(data, kind);
+  if (note) {
+    const noteEl = document.createElement("div");
+    noteEl.className = "muted";
+    noteEl.textContent = note;
+    container.append(noteEl);
+  }
+}
+
+function liveMetrics(data) {
+  const projection = data.live_projection || {};
+  const teams = data.teams || {};
+  const home = teams.home || {};
+  const away = teams.away || {};
+  return [
+    {
+      label: "Projected score",
+      value: formatScoreLine(
+        displayTeamCode(away, "Away"),
+        projection.projected_away_score,
+        displayTeamCode(home, "Home"),
+        projection.projected_home_score
+      )
+    },
+    { label: "Projected total", value: formatNumber(projection.projected_total) },
+    {
+      label: "Current score",
+      value: formatScoreLine(
+        displayTeamCode(away, "Away"),
+        away.score,
+        displayTeamCode(home, "Home"),
+        home.score
+      )
+    },
+    { label: "Market total", value: formatNullableNumber(projection.market_total_line) },
+    { label: "Remaining points", value: formatNullableNumber(projection.projected_remaining_points) },
+    { label: "Over probability", value: formatProbability(projection.p_over) }
+  ];
+}
+
+function historicalMetrics(data) {
+  const teams = data.teams || {};
+  const homeName = teams.home || "Home";
+  const awayName = teams.away || "Away";
+  const marketComparison = data.market_comparison || {};
+  return [
+    {
+      label: "Projected score",
+      value: formatScoreLine(awayName, data.projected_away_score, homeName, data.projected_home_score)
+    },
+    { label: "Projected total", value: formatNumber(data.projected_total) },
+    { label: "Home margin", value: formatNullableNumber(data.projected_home_margin) },
+    { label: "Market total", value: formatNullableNumber(marketComparison.market_total) }
+  ];
+}
+
+function projectionNote(data, kind) {
+  if (kind === "live") {
+    const quality = data.live_projection?.data_quality;
+    const inputs = data.live_projection?.model_inputs || {};
+    const marketDifference = data.live_projection?.difference_vs_market;
+    if (!quality) {
+      return "";
+    }
+    const warnings = Array.isArray(quality.warnings) ? quality.warnings : [];
+    const recentWindow =
+      typeof inputs.recent_points === "number" && typeof inputs.recent_minutes === "number"
+        ? `Recent window: ${inputs.recent_points} pts / ${inputs.recent_minutes} min`
+        : "";
+    const marketNote =
+      typeof marketDifference === "number" && Math.abs(marketDifference) >= 15
+        ? `High variance: ${formatSignedNumber(marketDifference)} vs market`
+        : "";
+    return [
+      quality.status ? `Status: ${quality.status}` : "",
+      quality.recent_scoring_source ? `Source: ${quality.recent_scoring_source}` : "",
+      recentWindow,
+      marketNote,
+      warnings[0] || ""
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  return data.game_date ? `Game date: ${data.game_date}` : "";
+}
+
+function resetProjectionDetail(game) {
+  projectionDetailEl.hidden = false;
+  projectionTitleEl.textContent = game.short_name || game.name || "Projection";
+  projectionMetaEl.textContent = formatScoreStatus(game);
+  projectionStatusEl.textContent = "";
+  projectionErrorEl.hidden = true;
+  projectionRefreshButton.disabled = false;
+  projectionLiveEl.className = "projection-content muted";
+  projectionHistoricalEl.className = "projection-content muted";
+  projectionLiveEl.textContent = "Loading live projection...";
+  projectionHistoricalEl.textContent = "Loading historical projection...";
+}
+
+function showProjectionError(message) {
+  projectionStatusEl.textContent = "";
+  projectionErrorEl.textContent = message;
+  projectionErrorEl.hidden = false;
+}
+
+function clearProjectionDetail() {
+  clearLiveRefreshTimer();
+  selectedGame = null;
+  selectedRow = null;
+  projectionRequestInFlight = false;
+  projectionDetailEl.hidden = true;
+  projectionErrorEl.hidden = true;
+  projectionStatusEl.textContent = "";
+  projectionLiveEl.replaceChildren();
+  projectionHistoricalEl.replaceChildren();
+}
+
+function clearLiveRefreshTimer() {
+  if (liveRefreshTimer !== null) {
+    window.clearInterval(liveRefreshTimer);
+    liveRefreshTimer = null;
+  }
 }
 
 function teamCell(team) {
@@ -104,10 +390,87 @@ function teamCell(team) {
   return tableCell;
 }
 
+function statusCell(game) {
+  const tableCell = document.createElement("td");
+  const container = document.createElement("div");
+  container.className = "cell-stack";
+
+  const status = document.createElement("span");
+  status.textContent = formatScoreStatus(game);
+  container.append(status);
+
+  if (isLiveGame(game)) {
+    container.append(liveBadge());
+  }
+
+  tableCell.append(container);
+  return tableCell;
+}
+
 function cell(value) {
   const tableCell = document.createElement("td");
   tableCell.textContent = value || "-";
   return tableCell;
+}
+
+function metricEl(label, value) {
+  const container = document.createElement("div");
+  container.className = "metric";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "metric-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("div");
+  valueEl.className = "metric-value";
+  valueEl.textContent = value || "-";
+
+  container.append(labelEl, valueEl);
+  return container;
+}
+
+function liveBadge() {
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = "LIVE";
+  return badge;
+}
+
+function sortGames(games) {
+  return [...games].sort((left, right) => {
+    const rankDiff = gameStatusRank(left) - gameStatusRank(right);
+    if (rankDiff !== 0) {
+      return rankDiff;
+    }
+
+    const leftTime = Date.parse(left.start_time || "");
+    const rightTime = Date.parse(right.start_time || "");
+    return safeTime(leftTime) - safeTime(rightTime);
+  });
+}
+
+function gameStatusRank(game) {
+  if (isLiveGame(game)) {
+    return 0;
+  }
+  if (game.status?.completed || game.status?.state === "post") {
+    return 2;
+  }
+  return 1;
+}
+
+function safeTime(value) {
+  return Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+}
+
+function isLiveGame(game) {
+  const state = String(game?.status?.state || "").toLowerCase();
+  if (state === "in") {
+    return true;
+  }
+
+  const status = `${game?.status?.description || ""} ${game?.status?.detail || ""}`.toLowerCase();
+  return !game?.status?.completed && /\b(in progress|quarter|half|period|inning)\b/.test(status);
 }
 
 function formatDateTime(value) {
@@ -127,6 +490,10 @@ function formatDateTime(value) {
 }
 
 function formatScoreStatus(game) {
+  if (!game) {
+    return "-";
+  }
+
   const away = game.teams?.away?.score;
   const home = game.teams?.home?.score;
   const status = game.status?.detail || game.status?.description || "";
@@ -136,4 +503,36 @@ function formatScoreStatus(game) {
   }
 
   return status || "-";
+}
+
+function formatScoreLine(awayName, awayScore, homeName, homeScore) {
+  return `${awayName} ${formatNullableNumber(awayScore)} - ${homeName} ${formatNullableNumber(homeScore)}`;
+}
+
+function displayTeamCode(team, fallback) {
+  const name = String(team?.name || "");
+  const abbreviation = String(team?.abbreviation || "");
+  if (team?.id === "18" || name.toLowerCase().includes("knicks") || abbreviation.toUpperCase() === "NY") {
+    return "NYK";
+  }
+  return abbreviation || name || fallback;
+}
+
+function formatNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "-";
+}
+
+function formatNullableNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
+}
+
+function formatProbability(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)}%` : "-";
+}
+
+function formatSignedNumber(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "";
+  }
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
 }

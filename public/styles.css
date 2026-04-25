@@ -141,12 +141,124 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+tbody tr.clickable-row {
+  cursor: pointer;
+}
+
+tbody tr.clickable-row:hover,
+tbody tr.clickable-row:focus {
+  background: #f4f7fb;
+  outline: 2px solid #1f5eff;
+  outline-offset: -2px;
+}
+
+tbody tr.selected-row {
+  background: #edf4ff;
+}
+
+.cell-stack {
+  display: grid;
+  gap: 4px;
+}
+
+.source-cell {
+  font-weight: 700;
+  color: #1f5eff;
+}
+
 .team {
   font-weight: 700;
 }
 
 .muted {
   color: #667085;
+}
+
+.badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #dcfae6;
+  color: #067647;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.projection-detail {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.projection-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.projection-header h2,
+.projection-card h3 {
+  margin: 0;
+}
+
+.projection-header button {
+  min-width: 110px;
+}
+
+.projection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.projection-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #eaecf0;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.projection-card h3 {
+  font-size: 1rem;
+}
+
+.projection-content {
+  display: grid;
+  gap: 8px;
+  font-size: 0.95rem;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric {
+  padding: 8px;
+  border: 1px solid #eaecf0;
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.metric-label {
+  color: #667085;
+  font-size: 0.78rem;
+}
+
+.metric-value {
+  margin-top: 2px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #17202a;
 }
 
 @media (max-width: 720px) {
@@ -161,5 +273,15 @@ tr:last-child td {
 
   button {
     width: 100%;
+  }
+
+  .projection-header,
+  .projection-grid,
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .projection-header {
+    display: grid;
   }
 }

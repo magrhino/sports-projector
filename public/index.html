@@ -53,6 +53,30 @@
           </table>
         </div>
       </section>
+
+      <section id="projection-detail" class="projection-detail" hidden>
+        <div class="projection-header">
+          <div>
+            <h2 id="projection-title">Projection</h2>
+            <div id="projection-meta" class="muted"></div>
+          </div>
+          <button id="projection-refresh" type="button">Refresh</button>
+        </div>
+
+        <div id="projection-status" class="status" role="status" aria-live="polite"></div>
+        <div id="projection-error" class="error" role="alert" hidden></div>
+
+        <div class="projection-grid">
+          <article class="projection-card">
+            <h3>Live projection</h3>
+            <div id="projection-live" class="projection-content muted">Select a game.</div>
+          </article>
+          <article class="projection-card">
+            <h3>Historical projection</h3>
+            <div id="projection-historical" class="projection-content muted">Select a game.</div>
+          </article>
+        </div>
+      </section>
     </main>
 
     <script src="/app.js" defer></script>

@@ -94,6 +94,42 @@ describe("NBA live projection model", () => {
       source: "kalshi_game_stats"
     });
   });
+
+  it("uses Kalshi period_number when play-by-play periods are reverse ordered", () => {
+    const recent = extractRecentScoringFromGameStats({
+      pbp: {
+        periods: [
+          {
+            period_number: 2,
+            events: [
+              { clock: "5:58", home_points: 31, away_points: 41 },
+              { clock: "9:59", home_points: 24, away_points: 32 },
+              { clock: "12:00", home_points: 20, away_points: 27 }
+            ]
+          },
+          {
+            period_number: 1,
+            events: [
+              { clock: "0:00", home_points: 20, away_points: 27 },
+              { clock: "12:00", home_points: 0, away_points: 0 }
+            ]
+          }
+        ]
+      },
+      period: 2,
+      clock: "5:58",
+      currentHomeScore: 31,
+      currentAwayScore: 41
+    });
+
+    expect(recent).toEqual({
+      points: 16,
+      minutes: 4,
+      home_points: 7,
+      away_points: 9,
+      source: "kalshi_game_stats"
+    });
+  });
 });
 
 describe("project_nba_live_score MCP tool", () => {

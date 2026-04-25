@@ -2,13 +2,25 @@ import { promises as fs } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
+import { KalshiClient } from "../clients/kalshi.js";
+import type { HistoricalProjectionClient } from "../nba/historical-client.js";
 import { searchGamesByTeam } from "./games-search.js";
+import { getNbaProjections } from "./nba-projections.js";
 
 const DEFAULT_PORT = 8080;
 
-export function createHttpHandler(input: { publicDir?: string; espnClient?: EspnClient } = {}) {
+export function createHttpHandler(
+  input: {
+    publicDir?: string;
+    espnClient?: EspnClient;
+    kalshiClient?: KalshiClient;
+    historicalClient?: HistoricalProjectionClient;
+  } = {}
+) {
   const publicDir = path.resolve(input.publicDir ?? process.env.SPORTS_PROJECTOR_PUBLIC_DIR ?? "public");
   const espnClient = input.espnClient ?? new EspnClient();
+  const kalshiClient = input.kalshiClient ?? new KalshiClient();
+  const historicalClient = input.historicalClient;
 
   return async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let url: URL;
@@ -16,6 +28,15 @@ export function createHttpHandler(input: { publicDir?: string; espnClient?: Espn
       url = new URL(request.url ?? "/", "http://localhost");
     } catch {
       writeJson(response, 400, { error: "Invalid request URL." });
+      return;
+    }
+
+    if (url.pathname === "/api/nba/projections") {
+      await handleNbaProjections(request, response, url, {
+        espnClient,
+        kalshiClient,
+        historicalClient
+      });
       return;
     }
 
@@ -46,6 +67,26 @@ async function handleGamesSearch(
   }
 
   const result = await searchGamesByTeam(url.searchParams, espnClient);
+  writeJson(response, result.status, result.body);
+}
+
+async function handleNbaProjections(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  clients: {
+    espnClient: EspnClient;
+    kalshiClient: KalshiClient;
+    historicalClient?: HistoricalProjectionClient;
+  }
+): Promise<void> {
+  if (request.method !== "GET") {
+    response.setHeader("allow", "GET");
+    writeJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const result = await getNbaProjections(url.searchParams, clients);
   writeJson(response, result.status, result.body);
 }
 

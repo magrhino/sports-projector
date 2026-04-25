@@ -659,7 +659,9 @@ function flattenPbpEvents(pbp: unknown): PbpScoredEvent[] {
   const periods = asArray(root.periods);
   return periods.flatMap((period, index) => {
     const periodRecord = asRecord(period);
-    const periodNumber = numberFromUnknown(periodRecord.number ?? periodRecord.period ?? periodRecord.sequence) ?? index + 1;
+    const periodNumber =
+      numberFromUnknown(periodRecord.number ?? periodRecord.period ?? periodRecord.period_number ?? periodRecord.sequence) ??
+      index + 1;
     return asArray(periodRecord.events).map((event) => {
       const item = asRecord(event);
       return {
