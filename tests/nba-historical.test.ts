@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -10,7 +11,7 @@ import {
   parseHistoricalJson,
   timeoutMsFromEnv
 } from "../src/nba/historical-client.js";
-import { HistoricalProjectionInputSchema } from "../src/nba/historical-tool.js";
+import { HistoricalProjectionInputSchema, registerHistoricalTools } from "../src/nba/historical-tool.js";
 import { createServer } from "../src/mcp/server.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -153,6 +154,59 @@ describe("HistoricalProjectionClient", () => {
 });
 
 describe("project_nba_historical_score MCP bridge", () => {
+  it("returns bounded command failure diagnostics without secret values", async () => {
+    const response = await callHistoricalTool(
+      new HistoricalProjectionClient({
+        runCommand: async () => {
+          throw new HistoricalProjectionError("Historical projection command failed", "command_failed", {
+            message: "Command failed: python -m nba_historical_projection predict",
+            stderr: `missing manifest\nAPI_KEY=super-secret-key\n${"x".repeat(3000)}`,
+            stdout: `partial output\nTOKEN=super-secret-token\n${"y".repeat(3000)}`
+          });
+        }
+      })
+    );
+
+    expect(response.data.error).toBe("Historical projection command failed");
+    expect(response.data.code).toBe("command_failed");
+
+    const diagnostics = response.data.diagnostics as Record<string, HistoricalDiagnosticText>;
+    expect(diagnostics.message.text).toContain("Command failed");
+    expect(diagnostics.stderr.text).toContain("missing manifest");
+    expect(diagnostics.stderr.text).toContain("API_KEY=[redacted]");
+    expect(diagnostics.stderr.text).not.toContain("super-secret-key");
+    expect(diagnostics.stderr.truncated).toBe(true);
+    expect(Array.from(diagnostics.stderr.text).length).toBeLessThanOrEqual(diagnostics.stderr.max_chars);
+    expect(diagnostics.stdout.text).toContain("partial output");
+    expect(diagnostics.stdout.text).toContain("TOKEN=[redacted]");
+    expect(diagnostics.stdout.text).not.toContain("super-secret-token");
+    expect(diagnostics.stdout.truncated).toBe(true);
+    expect(Array.from(diagnostics.stdout.text).length).toBeLessThanOrEqual(diagnostics.stdout.max_chars);
+  });
+
+  it("returns bounded invalid JSON diagnostics without secret values", async () => {
+    const response = await callHistoricalTool(
+      new HistoricalProjectionClient({
+        runCommand: async () => ({
+          stdout: `not json\nPASSWORD=hunter2\n${"z".repeat(3000)}`,
+          stderr: ""
+        })
+      })
+    );
+
+    expect(response.data.error).toBe("Historical projection returned invalid JSON");
+    expect(response.data.code).toBe("invalid_json");
+
+    const diagnostics = response.data.diagnostics as Record<string, HistoricalDiagnosticText>;
+    expect(diagnostics.message.text.toLowerCase()).toContain("json");
+    expect(diagnostics.stdout.text).toContain("not json");
+    expect(diagnostics.stdout.text).toContain("PASSWORD=[redacted]");
+    expect(diagnostics.stdout.text).not.toContain("hunter2");
+    expect(diagnostics.stdout.truncated).toBe(true);
+    expect(Array.from(diagnostics.stdout.text).length).toBeLessThanOrEqual(diagnostics.stdout.max_chars);
+    expect(diagnostics.stderr).toBeUndefined();
+  });
+
   it("calls the Python CLI with the documented linear_json fixture artifacts", async () => {
     const previousEnv = {
       root: process.env.SPORTS_PROJECTOR_HISTORICAL_ROOT,
@@ -227,6 +281,49 @@ describe("project_nba_historical_score MCP bridge", () => {
     }
   });
 });
+
+interface HistoricalDiagnosticText {
+  text: string;
+  truncated: boolean;
+  max_chars: number;
+}
+
+async function callHistoricalTool(clientImpl: HistoricalProjectionClient): Promise<{
+  data: Record<string, unknown>;
+}> {
+  const server = new McpServer({
+    name: "sports-projector-historical-test",
+    version: "0.0.0"
+  });
+  registerHistoricalTools(server, clientImpl);
+
+  const client = new Client({
+    name: "sports-projector-historical-test",
+    version: "0.0.0"
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "project_nba_historical_score",
+      arguments: {
+        home_team: "Boston Celtics",
+        away_team: "New York Knicks",
+        game_date: "2026-04-25"
+      }
+    });
+
+    return result.structuredContent as {
+      data: Record<string, unknown>;
+    };
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
 
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) {
