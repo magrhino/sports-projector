@@ -44,8 +44,10 @@ Run the web app with Docker:
 docker compose up --build
 ```
 
-The frontend is served at `http://localhost:8080`. The team search API is also
-available directly, for example:
+The compose service mounts `./data` at `/data`, enables live tracking, and points
+historical projections at `/data/historical`. The frontend is served at
+`http://localhost:8080`. The team search API is also available directly, for
+example:
 
 ```bash
 curl "http://localhost:8080/api/games/search?team=Celtics&league=nba"

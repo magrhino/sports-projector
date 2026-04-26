@@ -5,3 +5,10 @@ services:
       - "8080:8080"
     environment:
       PORT: "8080"
+      SPORTS_PROJECTOR_HISTORICAL_ROOT: /app
+      SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR: /data/historical
+      SPORTS_PROJECTOR_HISTORICAL_PYTHON: python3
+      SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED: "true"
+      SPORTS_PROJECTOR_LIVE_DB_PATH: /data/live-tracking/nba-live.sqlite
+    volumes:
+      - ./data:/data

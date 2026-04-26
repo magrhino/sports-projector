@@ -18,6 +18,7 @@ from nba_historical_projection.artifacts import (
 )
 from nba_historical_projection.cli import main as cli_main
 from nba_historical_projection.dataset import build_game_record
+from nba_historical_projection.features import build_feature_vector
 from nba_historical_projection.models import derive_team_scores, predict_from_artifacts
 from nba_historical_projection.providers.sportsdb import (
     DEFAULT_SPORTSDB_API_KEY,
@@ -34,6 +35,7 @@ from nba_historical_projection.sportsdb_import import (
     parse_games,
     recent_nba_seasons,
     select_seasons,
+    write_sqlite_rows,
 )
 from nba_historical_projection.training import (
     build_feature_defaults_from_frame,
@@ -552,6 +554,47 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(row["PRIOR_GAMES.1"], 0.0)
             self.assertEqual(row["DAYS_REST"], 7.0)
             self.assertEqual(row["DAYS_REST.1"], 7.0)
+
+    def test_sqlite_team_stats_use_latest_snapshot_before_game_date(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            stats_path = root / "team_stats.sqlite"
+            with sqlite3.connect(stats_path) as connection:
+                write_sqlite_rows(
+                    connection,
+                    "2025-10-20",
+                    [
+                        {"TEAM_NAME": "Boston Celtics", "PRIOR_GAMES": 1.0},
+                        {"TEAM_NAME": "New York Knicks", "PRIOR_GAMES": 2.0},
+                    ],
+                )
+                write_sqlite_rows(
+                    connection,
+                    "2025-10-25",
+                    [
+                        {"TEAM_NAME": "Boston Celtics", "PRIOR_GAMES": 3.0},
+                        {"TEAM_NAME": "New York Knicks", "PRIOR_GAMES": 4.0},
+                    ],
+                )
+
+            features, feature_values = build_feature_vector(
+                root,
+                {
+                    "feature_columns": ["PRIOR_GAMES", "PRIOR_GAMES.1"],
+                    "team_stats": {
+                        "type": "sqlite",
+                        "path": "team_stats.sqlite",
+                    },
+                },
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2025-10-26",
+                },
+            )
+
+            self.assertEqual(features, [3.0, 4.0])
+            self.assertEqual(feature_values["PRIOR_GAMES"], 3.0)
 
     def write_json(self, path: Path, value):
         with path.open("w", encoding="utf-8") as handle:

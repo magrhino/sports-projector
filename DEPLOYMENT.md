@@ -36,7 +36,7 @@ docker run -d \
   sports-projector:local
 ```
 
-Historical projection from Docker requires Python, the `python/nba_historical_projection` package, and a mounted artifact directory. The stock Dockerfile does not copy Python source, fixtures, or historical artifacts into the runtime image, so extend the image before relying on `scope=all` historical responses in container deployments.
+Historical projection from Docker requires a mounted artifact directory. The stock Dockerfile includes Python and the projection package, but generated historical artifacts remain operator-managed state and must be mounted separately.
 
 ## Docker Compose
 
@@ -48,19 +48,9 @@ services:
       - 8080:8080
     environment:
       PORT: "8080"
-    restart: unless-stopped
-```
-
-With live tracking and persistent state:
-
-```yaml
-services:
-  sports-projector-web:
-    build: .
-    ports:
-      - 8080:8080
-    environment:
-      PORT: "8080"
+      SPORTS_PROJECTOR_HISTORICAL_ROOT: /app
+      SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR: /data/historical
+      SPORTS_PROJECTOR_HISTORICAL_PYTHON: python3
       SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED: "true"
       SPORTS_PROJECTOR_LIVE_DB_PATH: /data/live-tracking/nba-live.sqlite
     volumes:

@@ -189,12 +189,12 @@ def load_sqlite_team_stats(
     away_team: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     path = artifact_path(root, config["path"])
-    table = str(config.get("table") or game_date)
     if not path.is_file():
         raise ArtifactError(f"Team stats SQLite database is missing: {path}")
 
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
+        table = str(config.get("table") or select_snapshot_table(connection, game_date))
         try:
             rows = connection.execute(f'SELECT * FROM "{table}"').fetchall()
         except sqlite3.Error as exc:
@@ -218,3 +218,34 @@ def load_sqlite_team_stats(
     if max(home_index, away_index) >= len(rows):
         raise ArtifactError(f"Team stats table {table} has fewer rows than expected")
     return dict(rows[home_index]), dict(rows[away_index])
+
+
+def select_snapshot_table(connection: sqlite3.Connection, game_date: str) -> str:
+    if not is_iso_date_name(game_date):
+        return game_date
+    try:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise ArtifactError(f"Unable to list team stats tables: {exc}") from exc
+
+    candidates = sorted(
+        str(row[0])
+        for row in rows
+        if row[0] is not None and is_iso_date_name(str(row[0])) and str(row[0]) <= game_date
+    )
+    if not candidates:
+        raise ArtifactError(f"No team stats snapshot table on or before {game_date}")
+    return candidates[-1]
+
+
+def is_iso_date_name(value: str) -> bool:
+    return (
+        len(value) == 10
+        and value[4] == "-"
+        and value[7] == "-"
+        and value[:4].isdigit()
+        and value[5:7].isdigit()
+        and value[8:].isdigit()
+    )
