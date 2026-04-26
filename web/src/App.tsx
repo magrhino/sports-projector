@@ -2,14 +2,15 @@ import { FormEvent, useState } from "react";
 import { useGameSearch, useLiveGames, useLiveTrackerStatus, useProjectionDetail } from "./hooks";
 import {
   asRecord,
+  displayTeamCode,
   formatDateTime,
-  formatLiveGameMatchup,
   formatScoreStatus,
   historicalMetrics,
   isLiveGame,
   leagueLabel,
   liveMetrics,
-  projectionNote
+  projectionNote,
+  teamLogoUrl
 } from "./format";
 import type { Game, League, ProjectionMetric, ProjectionSection, Team } from "./types";
 
@@ -194,7 +195,11 @@ function LiveGamesPanel(props: {
             aria-selected={props.selectedGameId === game.id}
             onClick={() => props.onSelect(game)}
           >
-            <span className="live-game-matchup">{formatLiveGameMatchup(game)}</span>
+            <span className="live-game-matchup">
+              <TeamSummary team={game.teams?.away} fallback="Away" />
+              <span className="matchup-separator">at</span>
+              <TeamSummary team={game.teams?.home} fallback="Home" />
+            </span>
             <span className="live-game-detail">{game.status?.detail || game.status?.description || "\u00a0"}</span>
           </button>
         ))}
@@ -298,8 +303,9 @@ function ResultsPanel(props: {
               >
                 <span className="result-card-date">{formatDateTime(game.start_time)}</span>
                 <span className="result-card-matchup">
-                  {game.teams?.away?.name || game.teams?.away?.abbreviation || "Away"} at{" "}
-                  {game.teams?.home?.name || game.teams?.home?.abbreviation || "Home"}
+                  <TeamSummary team={game.teams?.away} fallback="Away" />
+                  <span className="matchup-separator">at</span>
+                  <TeamSummary team={game.teams?.home} fallback="Home" />
                 </span>
                 <span className="result-card-status">{formatScoreStatus(game)}</span>
                 {isLiveGame(game) ? <span className="live-badge">LIVE</span> : null}
@@ -410,8 +416,42 @@ function TeamCell(props: { team: Team | undefined }) {
   const team = props.team;
   return (
     <td>
-      <div className="team-name">{team?.name || team?.abbreviation || "-"}</div>
-      {team?.score !== null && team?.score !== undefined ? <div className="muted">Score: {team.score}</div> : null}
+      <div className="team-cell">
+        <TeamMark team={team} fallback="-" />
+        <div className="team-copy">
+          <div className="team-name">{team?.name || team?.abbreviation || "-"}</div>
+          {team?.score !== null && team?.score !== undefined ? <div className="muted">Score: {team.score}</div> : null}
+        </div>
+      </div>
     </td>
+  );
+}
+
+function TeamSummary(props: { team: Team | undefined; fallback: string }) {
+  const label = displayTeamCode(props.team, props.fallback);
+  return (
+    <span className="team-summary">
+      <TeamMark team={props.team} fallback={props.fallback} />
+      <span className="team-summary-copy">
+        <span className="team-summary-name">{label}</span>
+        {props.team?.score !== null && props.team?.score !== undefined ? (
+          <span className="team-summary-score">{props.team.score}</span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
+function TeamMark(props: { team: Team | undefined; fallback: string }) {
+  const logo = teamLogoUrl(props.team);
+  const label = displayTeamCode(props.team, props.fallback);
+  if (logo) {
+    return <img className="team-icon" src={logo} alt="" loading="lazy" decoding="async" />;
+  }
+
+  return (
+    <span className="team-icon team-icon-fallback" aria-hidden="true">
+      {label.slice(0, 3).toUpperCase()}
+    </span>
   );
 }

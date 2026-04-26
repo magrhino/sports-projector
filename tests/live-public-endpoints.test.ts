@@ -124,6 +124,7 @@ function extractFirstTeam(data: Record<string, unknown>): EspnTeam | null {
             id,
             name: asString(team.displayName) ?? id,
             abbreviation: asString(team.abbreviation) ?? id,
+            logo: null,
             location: asString(team.location) ?? undefined,
             nickname: asString(team.name) ?? undefined,
             short_name: asString(team.shortDisplayName) ?? undefined

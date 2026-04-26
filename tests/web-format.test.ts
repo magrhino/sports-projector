@@ -6,13 +6,19 @@ import {
   formatScoreStatus,
   formatTrainingError,
   isLiveGame,
-  sortGames
+  sortGames,
+  teamLogoUrl
 } from "../web/src/format";
 
 describe("web formatting helpers", () => {
   it("keeps Knicks abbreviation compatibility", () => {
     expect(displayTeamCode({ id: "18", name: "New York Knicks", abbreviation: "NY" }, "Away")).toBe("NYK");
     expect(displayTeamCode({ name: "Boston Celtics", abbreviation: "BOS" }, "Home")).toBe("BOS");
+  });
+
+  it("keeps team logo URLs limited to web image protocols", () => {
+    expect(teamLogoUrl({ logo: "https://example.com/logo.png" })).toBe("https://example.com/logo.png");
+    expect(teamLogoUrl({ logo: "javascript:alert(1)" })).toBe("");
   });
 
   it("detects and sorts live games first", () => {

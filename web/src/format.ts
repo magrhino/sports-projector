@@ -82,6 +82,20 @@ export function displayTeamCode(team: Team | undefined, fallback: string): strin
   return abbreviation || name || fallback;
 }
 
+export function teamLogoUrl(team: Team | undefined): string {
+  const logo = String(team?.logo || "");
+  if (!logo) {
+    return "";
+  }
+
+  try {
+    const url = new URL(logo);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
 export function formatNumber(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "-";
 }

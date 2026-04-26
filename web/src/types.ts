@@ -4,6 +4,7 @@ export type Team = {
   id?: string;
   name?: string;
   abbreviation?: string;
+  logo?: string | null;
   score?: number | string | null;
 };
 

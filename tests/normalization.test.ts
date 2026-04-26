@@ -38,7 +38,7 @@ describe("ESPN normalization", () => {
                 {
                   homeAway: "home",
                   score: "51",
-                  team: { id: "1", displayName: "Home Team", abbreviation: "HOM" },
+                  team: { id: "1", displayName: "Home Team", abbreviation: "HOM", logo: "https://example.com/home.png" },
                   linescores: [{ period: 1, value: 25, displayValue: "25" }]
                 },
                 {
@@ -58,6 +58,7 @@ describe("ESPN normalization", () => {
     expect(result.games[0].status.period_name).toBe("quarter");
     expect(result.games[0].status.clock).toBe("5:12");
     expect(result.games[0].teams.home?.score).toBe(51);
+    expect(result.games[0].teams.home?.logo).toBe("https://example.com/home.png");
     expect(result.games[0].venue?.name).toBe("Example Arena");
   });
 

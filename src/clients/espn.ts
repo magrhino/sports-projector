@@ -17,6 +17,7 @@ export interface EspnTeam {
   id: string;
   name: string;
   abbreviation: string;
+  logo?: string | null;
   location?: string;
   nickname?: string;
   short_name?: string;
@@ -26,6 +27,7 @@ export interface EspnNormalizedTeam {
   id: string | null;
   name: string;
   abbreviation: string;
+  logo?: string | null;
   home_away: "home" | "away" | string;
   score: number | null;
   record: string | null;
@@ -164,7 +166,8 @@ export class EspnClient {
       return {
         id: teamQuery,
         name: teamQuery,
-        abbreviation: teamQuery
+        abbreviation: teamQuery,
+        logo: null
       };
     }
 
@@ -270,6 +273,7 @@ export function normalizeTeamSchedule(league: League, raw: unknown): {
             id: resolvedTeam.id,
             name: asString(resolvedTeam.name) ?? resolvedTeam.id,
             abbreviation: asString(resolvedTeam.abbreviation) ?? resolvedTeam.id,
+            logo: asString(resolvedTeam.logo),
             location: asString(resolvedTeam.location) ?? undefined,
             nickname: asString(resolvedTeam.nickname) ?? undefined,
             short_name: asString(resolvedTeam.short_name) ?? undefined
@@ -375,6 +379,7 @@ function normalizeCompetitor(raw: unknown): EspnNormalizedTeam {
     id: asString(team.id),
     name: asString(team.displayName) ?? "",
     abbreviation: asString(team.abbreviation) ?? "",
+    logo: extractTeamLogo(team),
     home_away: String(competitor.homeAway ?? ""),
     score: asNumber(competitor.score),
     record: asString(asRecord(asArray(competitor.records)[0]).summary),
@@ -401,6 +406,7 @@ function extractTeams(raw: unknown): EspnTeam[] {
           id: String(team.id ?? ""),
           name: asString(team.displayName) ?? "",
           abbreviation: asString(team.abbreviation) ?? "",
+          logo: extractTeamLogo(team),
           location: asString(team.location) ?? undefined,
           nickname: asString(team.name) ?? undefined,
           short_name: asString(team.shortDisplayName) ?? undefined
@@ -408,6 +414,16 @@ function extractTeams(raw: unknown): EspnTeam[] {
       })
     )
   );
+}
+
+function extractTeamLogo(team: Record<string, unknown>): string | null {
+  const directLogo = asString(team.logo);
+  if (directLogo !== null) {
+    return directLogo;
+  }
+
+  const firstLogo = asRecord(asArray(team.logos)[0]);
+  return asString(firstLogo.href);
 }
 
 function normalizeStats(rawStats: unknown[]): Record<string, string | number | boolean | null> {

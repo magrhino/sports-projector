@@ -24,7 +24,42 @@
   --amber-soft: #fff2dd;
   --red: #c5342b;
   --red-soft: #fff1ef;
+  --page-background: linear-gradient(180deg, rgb(255 255 255 / 72%), rgb(244 246 242 / 0%) 360px), var(--bg);
+  --panel-bg: rgb(255 255 255 / 92%);
+  --tracker-bg: linear-gradient(135deg, var(--primary-soft), #ffffff 66%);
+  --focus-ring: rgb(37 87 214 / 34%);
   --shadow: 0 20px 60px rgb(24 33 45 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    background: #101419;
+    color: #edf2f7;
+    --bg: #101419;
+    --surface: #171d24;
+    --surface-subtle: #1d252d;
+    --surface-strong: #25303a;
+    --text: #edf2f7;
+    --muted: #aab6c4;
+    --soft: #c4cfda;
+    --border: #303b47;
+    --border-strong: #43505f;
+    --primary: #7ba5ff;
+    --primary-strong: #a9c3ff;
+    --primary-soft: #1c2d52;
+    --green: #61d49d;
+    --green-soft: #173728;
+    --amber: #f0ad4e;
+    --amber-soft: #3d2d18;
+    --red: #ff8d86;
+    --red-soft: #42211f;
+    --page-background: linear-gradient(180deg, rgb(35 43 52 / 72%), rgb(16 20 25 / 0%) 360px), var(--bg);
+    --panel-bg: rgb(23 29 36 / 92%);
+    --tracker-bg: linear-gradient(135deg, #1c2d52, #171d24 66%);
+    --focus-ring: rgb(123 165 255 / 42%);
+    --shadow: 0 20px 60px rgb(0 0 0 / 28%);
+  }
 }
 
 * {
@@ -34,9 +69,7 @@
 body {
   min-width: 320px;
   margin: 0;
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 72%), rgb(244 246 242 / 0%) 360px),
-    var(--bg);
+  background: var(--page-background);
   color: var(--text);
 }
 
@@ -58,7 +91,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 tr:focus-visible {
-  outline: 3px solid rgb(37 87 214 / 34%);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -141,7 +174,7 @@ h3 {
 .projection-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgb(255 255 255 / 92%);
+  background: var(--panel-bg);
   box-shadow: var(--shadow);
 }
 
@@ -224,7 +257,7 @@ select {
   gap: 12px;
   border-radius: 7px;
   padding: 14px;
-  background: linear-gradient(135deg, var(--primary-soft), #ffffff 66%);
+  background: var(--tracker-bg);
 }
 
 .tracker-message,
@@ -295,9 +328,23 @@ select {
   background: var(--primary-soft);
 }
 
-.live-game-matchup {
+.live-game-matchup,
+.result-card-matchup {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
   overflow-wrap: anywhere;
   font-weight: 850;
+}
+
+.matchup-separator {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .live-game-detail,
@@ -395,6 +442,61 @@ tr:last-child td {
   color: var(--primary);
 }
 
+.team-cell,
+.team-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.team-cell {
+  gap: 9px;
+}
+
+.team-copy,
+.team-summary-copy {
+  min-width: 0;
+}
+
+.team-summary {
+  gap: 7px;
+}
+
+.team-summary-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.team-summary-name,
+.team-summary-score,
+.team-name {
+  overflow-wrap: anywhere;
+}
+
+.team-summary-score {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.team-icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  object-fit: contain;
+}
+
+.team-icon-fallback {
+  display: inline-grid;
+  place-items: center;
+  color: var(--soft);
+  font-size: 0.62rem;
+  font-weight: 850;
+}
+
 .live-badge {
   padding: 3px 8px;
   background: var(--green-soft);
@@ -413,10 +515,7 @@ tr:last-child td {
 }
 
 .result-card-matchup {
-  display: block;
   margin: 5px 0;
-  overflow-wrap: anywhere;
-  font-weight: 850;
 }
 
 .empty-state {

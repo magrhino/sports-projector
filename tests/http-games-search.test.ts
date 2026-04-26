@@ -14,6 +14,7 @@ describe("searchGamesByTeam", () => {
               id: "2",
               name: "Boston Celtics",
               abbreviation: "BOS",
+              logo: "https://a.espncdn.com/i/teamlogos/nba/500/bos.png",
               location: "Boston",
               nickname: "Celtics",
               short_name: "Celtics"
@@ -40,12 +41,22 @@ describe("searchGamesByTeam", () => {
                         {
                           homeAway: "home",
                           score: "101",
-                          team: { id: "18", displayName: "New York Knicks", abbreviation: "NY" }
+                          team: {
+                            id: "18",
+                            displayName: "New York Knicks",
+                            abbreviation: "NY",
+                            logos: [{ href: "https://a.espncdn.com/i/teamlogos/nba/500/ny.png" }]
+                          }
                         },
                         {
                           homeAway: "away",
                           score: "108",
-                          team: { id: "2", displayName: "Boston Celtics", abbreviation: "BOS" }
+                          team: {
+                            id: "2",
+                            displayName: "Boston Celtics",
+                            abbreviation: "BOS",
+                            logo: "https://a.espncdn.com/i/teamlogos/nba/500/bos.png"
+                          }
                         }
                       ]
                     }
@@ -63,8 +74,11 @@ describe("searchGamesByTeam", () => {
     expect(result.status).toBe(200);
     expect(result.body.source).toBe("espn");
     expect(result.body.team?.name).toBe("Boston Celtics");
+    expect(result.body.team?.logo).toBe("https://a.espncdn.com/i/teamlogos/nba/500/bos.png");
     expect(result.body.count).toBe(1);
     expect(result.body.games?.[0]?.teams.away?.name).toBe("Boston Celtics");
+    expect(result.body.games?.[0]?.teams.away?.logo).toBe("https://a.espncdn.com/i/teamlogos/nba/500/bos.png");
+    expect(result.body.games?.[0]?.teams.home?.logo).toBe("https://a.espncdn.com/i/teamlogos/nba/500/ny.png");
     expect(result.body.games?.[0]?.teams.home?.score).toBe(101);
   });
 
