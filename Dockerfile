@@ -6,6 +6,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY tsconfig.json ./
+COPY web ./web
 COPY src ./src
 RUN npm run build
 
@@ -19,7 +20,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY --from=build /app/dist ./dist
-COPY public ./public
+COPY --from=build /app/public ./public
 
 EXPOSE 8080
 
