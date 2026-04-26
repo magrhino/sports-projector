@@ -469,6 +469,7 @@ function liveMetrics(data) {
       )
     },
     { label: "Projected total", value: formatNumber(projection.projected_total) },
+    { label: "Time left", value: formatGameTimeLeft(data.game_status, projection.model_inputs) },
     {
       label: "Current score",
       value: formatScoreLine(
@@ -479,7 +480,6 @@ function liveMetrics(data) {
       )
     },
     { label: "Market total", value: formatNullableNumber(projection.market_total_line) },
-    { label: "Remaining points", value: formatNullableNumber(projection.projected_remaining_points) },
     { label: "Over probability", value: formatProbability(projection.p_over) }
   ];
   if (learned) {
@@ -758,6 +758,23 @@ function formatNumber(value) {
 
 function formatNullableNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
+}
+
+function formatGameTimeLeft(status, inputs) {
+  const clock = status?.clock || inputs?.clock;
+  const period = status?.period || inputs?.period;
+  const periodLabel = formatPeriodLabel(period);
+  if (!clock) {
+    return periodLabel || "-";
+  }
+  return periodLabel ? `${clock} ${periodLabel}` : String(clock);
+}
+
+function formatPeriodLabel(period) {
+  if (typeof period !== "number" || !Number.isFinite(period)) {
+    return "";
+  }
+  return period > 4 ? `OT${period - 4}` : `Q${period}`;
 }
 
 function formatProbability(value) {
