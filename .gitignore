@@ -9,3 +9,4 @@ __pycache__/
 
 # Local historical artifacts and generated state are operator-managed.
 data/historical/
+data/live-tracking/

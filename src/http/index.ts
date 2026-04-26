@@ -4,7 +4,14 @@ import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
 import type { HistoricalProjectionClient } from "../nba/historical-client.js";
-import { searchGamesByTeam } from "./games-search.js";
+import { maybeCreateLiveTracker } from "../nba/live-tracker.js";
+import { liveTrackingConfig, LiveTrackingStore, type LiveTrackingConfig } from "../nba/live-tracking-store.js";
+import { getLiveGames, searchGamesByTeam } from "./games-search.js";
+import {
+  getLiveTrackingStatus,
+  trainLiveModel,
+  type LiveTrackingHttpContext
+} from "./live-tracking.js";
 import { getNbaProjections } from "./nba-projections.js";
 
 const DEFAULT_PORT = 8080;
@@ -15,12 +22,18 @@ export function createHttpHandler(
     espnClient?: EspnClient;
     kalshiClient?: KalshiClient;
     historicalClient?: HistoricalProjectionClient;
+    liveTrackingContext?: LiveTrackingHttpContext | null;
+    liveTrackingConfig?: LiveTrackingConfig;
   } = {}
 ) {
   const publicDir = path.resolve(input.publicDir ?? process.env.SPORTS_PROJECTOR_PUBLIC_DIR ?? "public");
   const espnClient = input.espnClient ?? new EspnClient();
   const kalshiClient = input.kalshiClient ?? new KalshiClient();
   const historicalClient = input.historicalClient;
+  const liveContext =
+    input.liveTrackingContext !== undefined
+      ? input.liveTrackingContext
+      : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient);
 
   return async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let url: URL;
@@ -35,13 +48,29 @@ export function createHttpHandler(
       await handleNbaProjections(request, response, url, {
         espnClient,
         kalshiClient,
-        historicalClient
+        historicalClient,
+        liveTrackingStore: liveContext?.store
       });
+      return;
+    }
+
+    if (url.pathname === "/api/nba/live-tracking/status") {
+      await handleLiveTrackingStatus(request, response, liveContext);
+      return;
+    }
+
+    if (url.pathname === "/api/nba/live-model/train") {
+      await handleLiveModelTrain(request, response, liveContext);
       return;
     }
 
     if (url.pathname === "/api/games/search") {
       await handleGamesSearch(request, response, url, espnClient);
+      return;
+    }
+
+    if (url.pathname === "/api/games/live") {
+      await handleLiveGames(request, response, url, espnClient);
       return;
     }
 
@@ -51,6 +80,29 @@ export function createHttpHandler(
     }
 
     await serveStatic(request, response, publicDir, url.pathname);
+  };
+}
+
+function createLiveTrackingContext(
+  config: LiveTrackingConfig,
+  espnClient: EspnClient,
+  kalshiClient: KalshiClient
+): LiveTrackingHttpContext | null {
+  if (!config.enabled) {
+    return null;
+  }
+  const store = new LiveTrackingStore(config.dbPath);
+  const tracker = maybeCreateLiveTracker({
+    config,
+    store,
+    espnClient,
+    kalshiClient
+  });
+  tracker?.start();
+  return {
+    config,
+    store,
+    tracker
   };
 }
 
@@ -70,6 +122,22 @@ async function handleGamesSearch(
   writeJson(response, result.status, result.body);
 }
 
+async function handleLiveGames(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  espnClient: EspnClient
+): Promise<void> {
+  if (request.method !== "GET") {
+    response.setHeader("allow", "GET");
+    writeJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const result = await getLiveGames(url.searchParams, espnClient);
+  writeJson(response, result.status, result.body);
+}
+
 async function handleNbaProjections(
   request: IncomingMessage,
   response: ServerResponse,
@@ -78,6 +146,7 @@ async function handleNbaProjections(
     espnClient: EspnClient;
     kalshiClient: KalshiClient;
     historicalClient?: HistoricalProjectionClient;
+    liveTrackingStore?: LiveTrackingStore;
   }
 ): Promise<void> {
   if (request.method !== "GET") {
@@ -87,6 +156,36 @@ async function handleNbaProjections(
   }
 
   const result = await getNbaProjections(url.searchParams, clients);
+  writeJson(response, result.status, result.body);
+}
+
+async function handleLiveTrackingStatus(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: LiveTrackingHttpContext | null
+): Promise<void> {
+  if (request.method !== "GET") {
+    response.setHeader("allow", "GET");
+    writeJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const result = getLiveTrackingStatus(context);
+  writeJson(response, result.status, result.body);
+}
+
+async function handleLiveModelTrain(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: LiveTrackingHttpContext | null
+): Promise<void> {
+  if (request.method !== "POST") {
+    response.setHeader("allow", "POST");
+    writeJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const result = trainLiveModel(context);
   writeJson(response, result.status, result.body);
 }
 

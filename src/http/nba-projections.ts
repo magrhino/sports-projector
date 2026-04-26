@@ -6,6 +6,8 @@ import type { CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { EventIdSchema } from "../lib/validation.js";
 import { HistoricalProjectionClient, type HistoricalProjectionInput } from "../nba/historical-client.js";
+import { predictLearnedProjection } from "../nba/live-learning.js";
+import type { LiveTrackingStore } from "../nba/live-tracking-store.js";
 import { projectNbaLiveScore } from "../nba/live-tool.js";
 
 interface CachedFetch<T> {
@@ -26,6 +28,7 @@ export interface NbaProjectionClients {
   espnClient?: EspnClient;
   kalshiClient?: KalshiClient;
   historicalClient?: HistoricalProjectionRunner;
+  liveTrackingStore?: LiveTrackingStore;
 }
 
 type ProjectionScope = "all" | "live";
@@ -98,7 +101,7 @@ export async function getNbaProjections(
     };
   }
 
-  const liveProjection = await projectLiveSection(parsed.eventId, espnClient, kalshiClient);
+  const liveProjection = await projectLiveSection(parsed.eventId, espnClient, kalshiClient, clients.liveTrackingStore);
   const body: NbaProjectionResult["body"] = {
     source: "nba_projection",
     fetched_at: nowIso(),
@@ -111,7 +114,7 @@ export async function getNbaProjections(
   };
 
   if (parsed.scope === "all") {
-    body.historical_projection = await projectHistoricalSection(game, historicalClient, liveProjection, allowHistoricalFallback);
+    body.historical_projection = await projectHistoricalSection(game, historicalClient, allowHistoricalFallback);
   }
 
   return {
@@ -140,12 +143,29 @@ function parseProjectionInput(searchParams: URLSearchParams): { eventId: string;
 async function projectLiveSection(
   eventId: string,
   espnClient: EspnSummaryClient,
-  kalshiClient: KalshiClient
+  kalshiClient: KalshiClient,
+  liveTrackingStore?: LiveTrackingStore
 ): Promise<ProjectionSection> {
   try {
+    const data = await projectNbaLiveScore(
+      { event_id: eventId, include_debug: Boolean(liveTrackingStore) },
+      espnClient as EspnClient,
+      kalshiClient
+    );
+    if ((data.live_projection.data_quality as { status?: unknown } | undefined)?.status === "live") {
+      const model = liveTrackingStore?.loadLatestModel();
+      if (model) {
+        const learnedProjection = predictLearnedProjection(model, data);
+        if (learnedProjection) {
+          data.live_projection.learned_projection = learnedProjection;
+        }
+      }
+    }
+    recordLiveTrackingSnapshot(liveTrackingStore, data);
+    delete data.live_projection.debug;
     return {
       status: "ok",
-      data: await projectNbaLiveScore({ event_id: eventId, include_debug: false }, espnClient as EspnClient, kalshiClient)
+      data
     };
   } catch (error) {
     return {
@@ -155,13 +175,27 @@ async function projectLiveSection(
   }
 }
 
+function recordLiveTrackingSnapshot(liveTrackingStore: LiveTrackingStore | undefined, data: unknown): void {
+  if (!liveTrackingStore) {
+    return;
+  }
+
+  try {
+    liveTrackingStore.recordProjectionSnapshot({
+      trigger: "user",
+      payload: data
+    });
+  } catch (error) {
+    console.error(`Unable to record NBA live tracking snapshot: ${errorMessage(error)}`);
+  }
+}
+
 async function projectHistoricalSection(
   game: EspnNormalizedGame,
   historicalClient: HistoricalProjectionRunner,
-  liveProjection: ProjectionSection,
   allowFallback: boolean
 ): Promise<ProjectionSection> {
-  const input = historicalInputFromGame(game, liveProjection);
+  const input = historicalInputFromGame(game);
   if ("error" in input) {
     return {
       status: "error",
@@ -195,8 +229,7 @@ async function projectHistoricalSection(
 }
 
 function historicalInputFromGame(
-  game: EspnNormalizedGame,
-  liveProjection: ProjectionSection
+  game: EspnNormalizedGame
 ): HistoricalProjectionInput | { error: string } {
   const homeTeam = game.teams.home?.name || game.teams.home?.abbreviation;
   const awayTeam = game.teams.away?.name || game.teams.away?.abbreviation;
@@ -213,10 +246,6 @@ function historicalInputFromGame(
     away_team: awayTeam,
     game_date: gameDate
   };
-  const marketTotal = liveMarketTotal(liveProjection);
-  if (marketTotal !== null) {
-    input.market_total = marketTotal;
-  }
 
   return input;
 }
@@ -232,20 +261,6 @@ function isoDateFromStartTime(value: string | null): string | null {
   }
 
   return date.toISOString().slice(0, 10);
-}
-
-function liveMarketTotal(section: ProjectionSection): number | null {
-  if (section.status !== "ok" || !section.data || typeof section.data !== "object") {
-    return null;
-  }
-
-  const liveProjection = (section.data as { live_projection?: unknown }).live_projection;
-  if (!liveProjection || typeof liveProjection !== "object") {
-    return null;
-  }
-
-  const marketTotal = (liveProjection as { market_total_line?: unknown }).market_total_line;
-  return typeof marketTotal === "number" && Number.isFinite(marketTotal) ? marketTotal : null;
 }
 
 function errorMessage(error: unknown): string {

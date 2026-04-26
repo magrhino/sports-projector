@@ -80,6 +80,56 @@ button:disabled {
   color: #475467;
 }
 
+.live-games-status {
+  display: grid;
+  gap: 8px;
+}
+
+.live-games-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #344054;
+}
+
+.live-games-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.live-game-button {
+  display: grid;
+  min-height: 52px;
+  justify-items: start;
+  gap: 2px;
+  border-color: #c7d7fe;
+  padding: 8px 10px;
+  background: #ffffff;
+  color: #17202a;
+  text-align: left;
+}
+
+.live-game-button:hover,
+.live-game-button:focus {
+  border-color: #1f5eff;
+  outline: 2px solid #1f5eff;
+  outline-offset: -2px;
+}
+
+.live-game-button.selected-row {
+  border-color: #1f5eff;
+  background: #edf4ff;
+}
+
+.live-game-matchup {
+  font-weight: 700;
+}
+
+.live-game-detail {
+  color: #667085;
+  font-size: 0.85rem;
+}
+
 .error {
   margin: 14px 0;
   padding: 12px;
@@ -87,6 +137,26 @@ button:disabled {
   border-radius: 6px;
   background: #fff4f2;
   color: #912018;
+}
+
+.tracker-panel {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.tracker-panel h2 {
+  margin-bottom: 4px;
+}
+
+.tracker-panel button {
+  min-width: 120px;
 }
 
 .results {
@@ -277,11 +347,13 @@ tbody tr.selected-row {
 
   .projection-header,
   .projection-grid,
-  .metric-grid {
+  .metric-grid,
+  .tracker-panel {
     grid-template-columns: 1fr;
   }
 
-  .projection-header {
+  .projection-header,
+  .tracker-panel {
     display: grid;
   }
 }

@@ -84,6 +84,7 @@ const NBA_REGULATION_MINUTES = 48;
 const NBA_PERIOD_MINUTES = 12;
 const NBA_OVERTIME_MINUTES = 5;
 const SCORE_SPLIT_PRIOR_WEIGHT = 0.5;
+const MAX_RECENT_POINTS_PER_MINUTE = 7;
 
 export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreProjectionResult {
   const currentTotal = input.currentHomeScore + input.currentAwayScore;
@@ -97,14 +98,8 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
   const fullGameRate = elapsed > 0 ? currentTotal / elapsed : baselineRate(input.marketTotalLine, currentTotal);
   const historicalBaseline = baselineTotal(input, currentTotal, elapsed, minutesLeft);
   const priorRate = historicalBaseline / NBA_REGULATION_MINUTES;
-  const recentRate =
-    input.recentPoints !== null &&
-    input.recentPoints !== undefined &&
-    input.recentMinutes !== null &&
-    input.recentMinutes !== undefined &&
-    input.recentMinutes > 0
-      ? input.recentPoints / input.recentMinutes
-      : fullGameRate;
+  const recentScoring = sanitizeRecentScoring(input, currentTotal);
+  const recentRate = recentScoring ? recentScoring.points / recentScoring.minutes : fullGameRate;
 
   const [wPrior, wFull, wRecent] = dynamicRateWeights(minutesLeft);
   const blendedRate = wPrior * priorRate + wFull * fullGameRate + wRecent * recentRate;
@@ -128,8 +123,8 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
     currentHomeScore: input.currentHomeScore,
     currentAwayScore: input.currentAwayScore,
     projectedTotal,
-    recentHomePoints: input.recentHomePoints,
-    recentAwayPoints: input.recentAwayPoints
+    recentHomePoints: recentScoring?.homePoints,
+    recentAwayPoints: recentScoring?.awayPoints
   });
   const marketTotalLine = input.marketTotalLine ?? null;
   const difference = marketTotalLine === null ? null : projectedTotal - marketTotalLine;
@@ -163,8 +158,8 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
       current_away_score: input.currentAwayScore,
       period: input.period,
       clock: input.clock,
-      recent_points: input.recentPoints ?? null,
-      recent_minutes: input.recentMinutes ?? null,
+      recent_points: recentScoring?.points ?? null,
+      recent_minutes: recentScoring?.minutes ?? null,
       home_fouls_period: input.homeFoulsPeriod ?? null,
       away_fouls_period: input.awayFoulsPeriod ?? null,
       is_playoffs: isPlayoffs
@@ -312,7 +307,14 @@ export function extractRecentScoringFromGameStats(input: {
   const homePoints = Math.max(0, input.currentHomeScore - baseline.homeScore);
   const awayPoints = Math.max(0, input.currentAwayScore - baseline.awayScore);
   const points = homePoints + awayPoints;
-  if (points <= 0 || windowMinutes <= 0) {
+  if (
+    points <= 0 ||
+    windowMinutes <= 0 ||
+    points > input.currentHomeScore + input.currentAwayScore ||
+    homePoints > input.currentHomeScore ||
+    awayPoints > input.currentAwayScore ||
+    points / windowMinutes > MAX_RECENT_POINTS_PER_MINUTE
+  ) {
     return null;
   }
 
@@ -322,6 +324,48 @@ export function extractRecentScoringFromGameStats(input: {
     home_points: homePoints,
     away_points: awayPoints,
     source: "kalshi_game_stats"
+  };
+}
+
+function sanitizeRecentScoring(input: LiveScoreProjectionInput, currentTotal: number): {
+  points: number;
+  minutes: number;
+  homePoints: number | null;
+  awayPoints: number | null;
+} | null {
+  if (
+    input.recentPoints === null ||
+    input.recentPoints === undefined ||
+    input.recentMinutes === null ||
+    input.recentMinutes === undefined ||
+    input.recentMinutes <= 0
+  ) {
+    return null;
+  }
+
+  const recentHomePoints = input.recentHomePoints ?? 0;
+  const recentAwayPoints = input.recentAwayPoints ?? 0;
+  const hasTeamSplit =
+    input.recentHomePoints !== null &&
+    input.recentHomePoints !== undefined &&
+    input.recentAwayPoints !== null && input.recentAwayPoints !== undefined;
+  const teamTotal = recentHomePoints + recentAwayPoints;
+  const points = hasTeamSplit ? teamTotal : input.recentPoints;
+  if (
+    points <= 0 ||
+    points > currentTotal ||
+    recentHomePoints > input.currentHomeScore ||
+    recentAwayPoints > input.currentAwayScore ||
+    points / input.recentMinutes > MAX_RECENT_POINTS_PER_MINUTE
+  ) {
+    return null;
+  }
+
+  return {
+    points,
+    minutes: input.recentMinutes,
+    homePoints: hasTeamSplit ? recentHomePoints : null,
+    awayPoints: hasTeamSplit ? recentAwayPoints : null
   };
 }
 

@@ -1,10 +1,24 @@
-import { EspnClient, normalizeTeamSchedule, type EspnNormalizedGame, type EspnTeam } from "../clients/espn.js";
+import {
+  EspnClient,
+  normalizeScoreboard,
+  normalizeTeamSchedule,
+  type EspnNormalizedGame,
+  type EspnTeam
+} from "../clients/espn.js";
 import type { CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { LeagueSchema, TeamQuerySchema, type League } from "../lib/validation.js";
 
 interface TeamScheduleClient {
   getTeamSchedule(input: { league: League; team: string; season?: number }): Promise<{
+    cacheStatus: CacheStatus;
+    data: unknown;
+    sourceUrl: string;
+  }>;
+}
+
+interface ScoreboardClient {
+  getScoreboard(input: { league: League; limit?: number }): Promise<{
     cacheStatus: CacheStatus;
     data: unknown;
     sourceUrl: string;
@@ -23,6 +37,62 @@ export interface GamesSearchResult {
     games?: EspnNormalizedGame[];
     error?: string;
   };
+}
+
+export interface LiveGamesResult {
+  status: number;
+  body: {
+    source?: "espn";
+    fetched_at?: string;
+    source_url?: string | null;
+    cache_status?: CacheStatus;
+    league?: League;
+    count?: number;
+    games?: EspnNormalizedGame[];
+    error?: string;
+  };
+}
+
+export async function getLiveGames(
+  searchParams: URLSearchParams,
+  client: ScoreboardClient = new EspnClient()
+): Promise<LiveGamesResult> {
+  const league = LeagueSchema.safeParse(searchParams.get("league") ?? "nba");
+  if (!league.success) {
+    return {
+      status: 400,
+      body: {
+        error: league.error.issues[0]?.message ?? "Invalid league query parameter."
+      }
+    };
+  }
+
+  try {
+    const result = await client.getScoreboard({ league: league.data, limit: 100 });
+    const data = normalizeScoreboard(league.data, result.data);
+    const games = data.games.filter(isLiveGame);
+
+    return {
+      status: 200,
+      body: {
+        source: "espn",
+        fetched_at: nowIso(),
+        source_url: result.sourceUrl,
+        cache_status: result.cacheStatus,
+        league: data.league,
+        count: games.length,
+        games
+      }
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 502,
+      body: {
+        error: `Unable to fetch ESPN scoreboard: ${message}`
+      }
+    };
+  }
 }
 
 export async function searchGamesByTeam(
@@ -113,4 +183,13 @@ function parseSeason(rawSeason: string | null): { value?: number } | { error: st
   }
 
   return { value: season };
+}
+
+function isLiveGame(game: EspnNormalizedGame): boolean {
+  if (game.status.state === "in") {
+    return true;
+  }
+
+  const detail = `${game.status.description ?? ""} ${game.status.detail ?? ""}`.toLowerCase();
+  return !game.status.completed && /\b(in progress|quarter|half|period|inning)\b/.test(detail);
 }

@@ -32,6 +32,14 @@
       <div id="status" class="status" role="status" aria-live="polite"></div>
       <div id="error" class="error" role="alert" hidden></div>
 
+      <section class="tracker-panel" aria-labelledby="tracker-title">
+        <div>
+          <h2 id="tracker-title">Live NBA tracker</h2>
+          <div id="tracker-status" class="muted">Loading tracker status...</div>
+        </div>
+        <button id="tracker-train" type="button">Train model</button>
+      </section>
+
       <section id="results" class="results" hidden>
         <div class="results-header">
           <h2 id="results-title">Results</h2>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { searchGamesByTeam } from "../src/http/games-search.js";
+import { getLiveGames, searchGamesByTeam } from "../src/http/games-search.js";
 
 describe("searchGamesByTeam", () => {
   it("returns normalized ESPN games for a valid team search", async () => {
@@ -100,4 +100,65 @@ describe("searchGamesByTeam", () => {
     expect(result.status).toBe(404);
     expect(result.body.error).toMatch(/Could not resolve ESPN team/);
   });
+
+  it("returns all live ESPN scoreboard games for the selected league", async () => {
+    const result = await getLiveGames(new URLSearchParams({ league: "nba" }), {
+      async getScoreboard(input: { league: "nba"; limit?: number }) {
+        expect(input).toEqual({ league: "nba", limit: 100 });
+        return {
+          cacheStatus: "bypass" as const,
+          sourceUrl: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=100",
+          data: {
+            day: {
+              date: "2026-04-25"
+            },
+            events: [
+              scoreboardEvent("401", "in", false),
+              scoreboardEvent("402", "pre", false),
+              scoreboardEvent("403", "post", true)
+            ]
+          }
+        };
+      }
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body.league).toBe("nba");
+    expect(result.body.count).toBe(1);
+    expect(result.body.games?.map((game) => game.id)).toEqual(["401"]);
+  });
 });
+
+function scoreboardEvent(id: string, state: string, completed: boolean) {
+  return {
+    id,
+    name: "New York Knicks at Boston Celtics",
+    shortName: "NY @ BOS",
+    date: "2026-04-25T23:00:00Z",
+    competitions: [
+      {
+        status: {
+          period: 4,
+          displayClock: completed ? "0.0" : "9:25",
+          type: {
+            state,
+            description: completed ? "Final" : state === "pre" ? "Scheduled" : "In Progress",
+            completed
+          }
+        },
+        competitors: [
+          {
+            homeAway: "home",
+            score: completed ? "101" : "83",
+            team: { id: "2", displayName: "Boston Celtics", abbreviation: "BOS" }
+          },
+          {
+            homeAway: "away",
+            score: completed ? "99" : "78",
+            team: { id: "18", displayName: "New York Knicks", abbreviation: "NY" }
+          }
+        ]
+      }
+    ]
+  };
+}

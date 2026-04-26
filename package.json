@@ -19,6 +19,7 @@
   "scripts": {
     "mcp": "node node_modules/tsx/dist/cli.mjs src/index.ts",
     "web": "node node_modules/tsx/dist/cli.mjs src/http/index.ts",
+    "train:live": "node node_modules/tsx/dist/cli.mjs src/nba/live-train.ts",
     "build": "node node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "start": "node dist/index.js",
     "start:web": "node dist/http/index.js",
@@ -43,9 +44,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
+    "better-sqlite3": "^11.10.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.9",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",

@@ -1,9 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
 import { createHttpHandler } from "../src/http/index.js";
+import type { LiveTrackingHttpContext } from "../src/http/live-tracking.js";
 import { HistoricalProjectionClient } from "../src/nba/historical-client.js";
+import { LiveTrackingStore } from "../src/nba/live-tracking-store.js";
 
 describe("createHttpHandler", () => {
   it("does not parse request URLs against the user-controlled Host header", async () => {
@@ -52,13 +57,14 @@ describe("createHttpHandler", () => {
     expect(response.statusCode).toBe(200);
     expect(payload.game.short_name).toBe("NY @ BOS");
     expect(payload.live_projection.status).toBe("ok");
+    expect(payload.live_projection.data?.live_projection.market_total_line).toBe(203);
     expect(payload.historical_projection?.status).toBe("ok");
     expect(historicalInputs[0]).toMatchObject({
       home_team: "Boston Celtics",
       away_team: "New York Knicks",
-      game_date: "2026-04-25",
-      market_total: 203
+      game_date: "2026-04-25"
     });
+    expect(historicalInputs[0]).not.toHaveProperty("market_total");
   });
 
   it("skips historical projection for live-only refreshes", async () => {
@@ -120,22 +126,198 @@ describe("createHttpHandler", () => {
     expect(payload.live_projection.error).toMatch(/current scores/i);
     expect(payload.historical_projection?.status).toBe("ok");
   });
+
+  it("returns live tracking status", async () => {
+    const response = await callHandler(createHttpHandler(), "/api/nba/live-tracking/status");
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).tracker.enabled).toBe(false);
+    expect(JSON.parse(response.body).tracker.training.snapshots).toBe(0);
+  });
+
+  it("returns a training error when there are not enough finalized snapshots", async () => {
+    const context = createLiveTrackingContext();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          liveTrackingContext: context
+        }),
+        "/api/nba/live-model/train",
+        "POST"
+      );
+
+      expect(response.statusCode).toBe(400);
+      const payload = JSON.parse(response.body);
+      expect(payload.error).toMatch(/Need at least/i);
+      expect(payload.tracker.training.snapshots).toBe(0);
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
+  it("keeps projections successful when live tracking snapshot persistence fails", async () => {
+    const context = createLiveTrackingContext();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    context.store.recordProjectionSnapshot = () => {
+      throw new Error("database is locked");
+    };
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+          kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+          liveTrackingContext: context
+        }),
+        "/api/nba/projections?event_id=401&scope=live"
+      );
+
+      const payload = JSON.parse(response.body) as ProjectionResponse;
+      expect(response.statusCode).toBe(200);
+      expect(payload.live_projection.status).toBe("ok");
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/database is locked/));
+    } finally {
+      errorSpy.mockRestore();
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
+  it("does not attach learned live corrections to completed projections", async () => {
+    const context = createLiveTrackingContext();
+    seedLiveModel(context.store);
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          espnClient: espnSummaryClient(
+            espnSummaryFixture({
+              eventId: "401",
+              completed: true,
+              homeScore: "101",
+              awayScore: "99"
+            })
+          ),
+          kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+          liveTrackingContext: context
+        }),
+        "/api/nba/projections?event_id=401&scope=live"
+      );
+
+      const payload = JSON.parse(response.body) as ProjectionResponse;
+      expect(response.statusCode).toBe(200);
+      expect(payload.live_projection.status).toBe("ok");
+      expect(payload.live_projection.data?.live_projection.data_quality.status).toBe("completed");
+      expect(payload.live_projection.data?.live_projection.learned_projection).toBeUndefined();
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
 });
 
 async function callHandler(
   handler: ReturnType<typeof createHttpHandler>,
-  url: string
+  url: string,
+  method = "GET"
 ): Promise<ServerResponse & { body: string }> {
   const response = createResponseDouble();
   await handler(
     {
-      method: "GET",
+      method,
       url,
       headers: { host: "localhost:bad" }
     } as IncomingMessage,
     response
   );
   return response;
+}
+
+function createLiveTrackingContext(): LiveTrackingHttpContext & { cleanup: () => void } {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-http-live-"));
+  const store = new LiveTrackingStore(path.join(dir, "nba-live.sqlite"));
+  return {
+    config: {
+      enabled: true,
+      dbPath: store.dbPath,
+      intervalSeconds: 30,
+      concurrency: 2,
+      minSnapshots: 50
+    },
+    store,
+    tracker: null,
+    cleanup: () => rmSync(dir, { recursive: true, force: true })
+  };
+}
+
+function seedLiveModel(store: LiveTrackingStore): void {
+  store.recordProjectionSnapshot({
+    trigger: "tracker",
+    payload: {
+      event_id: "401",
+      teams: {
+        home: { id: "2", name: "Boston Celtics", abbreviation: "BOS", score: 83 },
+        away: { id: "18", name: "New York Knicks", abbreviation: "NY", score: 78 }
+      },
+      game_status: {
+        state: "in",
+        description: "In Progress",
+        detail: "9:25 - 4th Quarter",
+        completed: false,
+        period: 4,
+        clock: "9:25"
+      },
+      live_projection: {
+        projected_home_score: 104,
+        projected_away_score: 98,
+        projected_total: 202,
+        projected_remaining_points: 41,
+        market_total_line: 203,
+        difference_vs_market: -1,
+        p_over: 0.5,
+        relationship_to_market: "near_market",
+        model_inputs: {
+          current_home_score: 83,
+          current_away_score: 78,
+          period: 4,
+          clock: "9:25",
+          recent_points: null,
+          recent_minutes: null,
+          home_fouls_period: null,
+          away_fouls_period: null,
+          is_playoffs: true
+        },
+        data_quality: {
+          status: "live",
+          market_line_source: "auto_search",
+          selected_market_ticker: "KXNBA-CELNYK-TOTAL-203"
+        },
+        debug: {
+          selected_market: {
+            market: marketFixture("KXNBA-CELNYK-TOTAL-203", 203),
+            line: 203
+          },
+          model_details: {
+            elapsed_minutes: 38.58,
+            minutes_left: 9.42,
+            margin: 5,
+            full_game_rate: 4.17,
+            prior_rate: 4.23,
+            recent_rate: 4.17,
+            blended_rate: 4.2
+          }
+        },
+        source_urls: {}
+      }
+    }
+  });
+  store.upsertGame({
+    event_id: "401",
+    final_home_score: 101,
+    final_away_score: 99,
+    status_state: "post",
+    finalized_at: "2026-04-26T02:00:00Z"
+  });
+  store.trainLatestModel(1);
 }
 
 function createResponseDouble(): ServerResponse & { body: string } {
@@ -159,6 +341,15 @@ interface ProjectionResponse {
   live_projection: {
     status: "ok" | "error";
     error?: string;
+    data?: {
+      live_projection: {
+        market_total_line: number | null;
+        learned_projection?: unknown;
+        data_quality: {
+          status: string;
+        };
+      };
+    };
   };
   historical_projection?: {
     status: "ok" | "error";
@@ -205,7 +396,9 @@ function espnSummaryFixture(input: {
   eventId: string;
   homeScore?: string | null;
   awayScore?: string | null;
+  completed?: boolean;
 }) {
+  const completed = input.completed ?? false;
   return {
     header: {
       id: input.eventId,
@@ -215,13 +408,13 @@ function espnSummaryFixture(input: {
         {
           date: "2026-04-25T23:00:00Z",
           status: {
-            displayClock: "9:25",
+            displayClock: completed ? "0.0" : "9:25",
             period: 4,
             type: {
-              state: "in",
-              description: "In Progress",
-              detail: "9:25 - 4th Quarter",
-              completed: false
+              state: completed ? "post" : "in",
+              description: completed ? "Final" : "In Progress",
+              detail: completed ? "Final" : "9:25 - 4th Quarter",
+              completed
             }
           },
           competitors: [

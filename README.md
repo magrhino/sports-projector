@@ -30,6 +30,13 @@ npm run web
 ```
 
 Open `http://localhost:8080` and search for a team such as `Celtics` with league `NBA`.
+Set `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED=true` to also poll all live NBA games, persist live market/projection snapshots, and serve tracker status in the app.
+
+Train the local live correction model after enough finalized snapshots have been collected:
+
+```bash
+npm run train:live
+```
 
 Run the web app with Docker:
 
@@ -42,6 +49,13 @@ available directly, for example:
 
 ```bash
 curl "http://localhost:8080/api/games/search?team=Celtics&league=nba"
+```
+
+Live tracking endpoints:
+
+```bash
+curl "http://localhost:8080/api/nba/live-tracking/status"
+curl -X POST "http://localhost:8080/api/nba/live-model/train"
 ```
 
 ## Codex MCP Setup
@@ -128,6 +142,11 @@ All configuration is optional.
 | `SPORTS_PROJECTOR_HISTORICAL_ROOT` | current working directory | Project root used to set `PYTHONPATH` for `python/nba_historical_projection` |
 | `SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR` | `data/historical` under the root | Local artifact directory containing `manifest.json` and model files |
 | `SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS` | `30000` | Clamped from 1000 to 120000 ms |
+| `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED` | `false` | Starts the web app NBA live-game tracker when true |
+| `SPORTS_PROJECTOR_LIVE_DB_PATH` | `data/live-tracking/nba-live.sqlite` | Local SQLite path for live snapshots and trained models |
+| `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Live tracker polling interval, clamped from 5 to 300 seconds |
+| `SPORTS_PROJECTOR_LIVE_TRACKING_CONCURRENCY` | `2` | Concurrent live event projections, clamped from 1 to 8 |
+| `SPORTS_PROJECTOR_LIVE_MODEL_MIN_SNAPSHOTS` | `50` | Minimum finalized snapshots required to train the live correction model |
 
 Historical artifact commands:
 
@@ -225,6 +244,8 @@ Kalshi public endpoints used:
 - `https://api.elections.kalshi.com/trade-api/v2/live_data/milestone/{milestone_id}/game_stats`
 
 ESPN public endpoints are unofficial and undocumented. They can change or become unavailable without notice.
+
+Live tracking writes operator-managed generated state under `data/live-tracking/`. It is local training data and should not be committed.
 
 The historical projection bridge does not fetch network data during MCP prediction. It reads local artifacts only.
 

@@ -16,12 +16,21 @@ const projectionErrorEl = document.querySelector("#projection-error");
 const projectionRefreshButton = document.querySelector("#projection-refresh");
 const projectionLiveEl = document.querySelector("#projection-live");
 const projectionHistoricalEl = document.querySelector("#projection-historical");
+const trackerStatusEl = document.querySelector("#tracker-status");
+const trackerTrainButton = document.querySelector("#tracker-train");
 
 let currentLeague = leagueSelect.value;
 let selectedGame = null;
 let selectedRow = null;
 let liveRefreshTimer = null;
+let trackerStatusTimer = null;
 let projectionRequestInFlight = false;
+let statusMessage = "";
+let liveGames = [];
+let liveGamesLoaded = false;
+let liveGamesError = "";
+let liveGamesRequestId = 0;
+let trackerStatusRequestId = 0;
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -33,8 +42,9 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  setLoading(true);
   currentLeague = league;
+  setLoading(true);
+  void loadLiveGames(league);
   clearResults();
 
   try {
@@ -56,22 +66,153 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+leagueSelect.addEventListener("change", () => {
+  currentLeague = leagueSelect.value;
+  statusMessage = "";
+  clearResults();
+  void loadLiveGames(currentLeague);
+});
+
 projectionRefreshButton.addEventListener("click", () => {
   if (!selectedGame) {
     return;
   }
 
-  void fetchProjection(selectedGame, "all");
+  void fetchProjection(selectedGame, isLiveGame(selectedGame) ? "live" : "all");
 });
+
+trackerTrainButton.addEventListener("click", async () => {
+  trackerTrainButton.disabled = true;
+  trackerStatusEl.textContent = "Training live model...";
+  try {
+    const response = await fetch("/api/nba/live-model/train", {
+      method: "POST",
+      headers: { accept: "application/json" }
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const message = formatTrainingError(payload);
+      if (payload.tracker) {
+        renderTrackerStatus({
+          running: false,
+          polling: false,
+          last_error: null,
+          tracker: payload.tracker
+        });
+      }
+      trackerStatusEl.textContent = message;
+      return;
+    }
+    await loadTrackerStatus();
+  } catch (error) {
+    trackerStatusEl.textContent = error instanceof Error ? error.message : String(error);
+    trackerTrainButton.disabled = false;
+  }
+});
+
+void loadLiveGames(currentLeague);
+void loadTrackerStatus();
+trackerStatusTimer = window.setInterval(() => {
+  void loadTrackerStatus();
+}, 15000);
+
+async function loadLiveGames(league) {
+  const requestId = ++liveGamesRequestId;
+  liveGamesError = "";
+  liveGamesLoaded = false;
+  liveGames = [];
+  renderStatus();
+
+  try {
+    const params = new URLSearchParams({ league });
+    const response = await fetch(`/api/games/live?${params.toString()}`, {
+      headers: { accept: "application/json" }
+    });
+    const payload = await response.json();
+    if (requestId !== liveGamesRequestId) {
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to load live games.");
+    }
+    liveGames = Array.isArray(payload.games) ? sortGames(payload.games) : [];
+    liveGamesLoaded = true;
+  } catch (error) {
+    if (requestId !== liveGamesRequestId) {
+      return;
+    }
+    liveGames = [];
+    liveGamesLoaded = true;
+    liveGamesError = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (requestId === liveGamesRequestId) {
+      renderStatus();
+    }
+  }
+}
+
+async function loadTrackerStatus() {
+  const requestId = ++trackerStatusRequestId;
+  try {
+    const response = await fetch("/api/nba/live-tracking/status", {
+      headers: { accept: "application/json" }
+    });
+    const payload = await response.json();
+    if (requestId !== trackerStatusRequestId) {
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to load tracker status.");
+    }
+    renderTrackerStatus(payload);
+  } catch (error) {
+    if (requestId !== trackerStatusRequestId) {
+      return;
+    }
+    trackerStatusEl.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function renderTrackerStatus(payload) {
+  const tracker = payload.tracker || {};
+  const games = tracker.games || {};
+  const latest = tracker.latest_snapshot;
+  const model = tracker.model;
+  const training = tracker.training || {};
+  const trainingSnapshots = training.snapshots || 0;
+  const minSnapshots = training.min_snapshots;
+  trackerTrainButton.disabled = !tracker.enabled || !training.ready;
+  trackerTrainButton.title = !tracker.enabled
+    ? "Live tracking is disabled."
+    : training.ready
+      ? "Train the live correction model."
+      : `Need ${minSnapshots || "more"} finalized trainable snapshots; found ${trainingSnapshots}.`;
+  trackerStatusEl.textContent = [
+    tracker.enabled ? "enabled" : "disabled",
+    payload.running ? "polling" : "idle",
+    `${tracker.snapshots || 0} collected snapshots`,
+    `${trainingSnapshots} trainable snapshots`,
+    `${games.live || 0} live games`,
+    latest?.market_total_line !== null && latest?.market_total_line !== undefined
+      ? `latest market ${latest.market_total_line}`
+      : "",
+    model ? `model ${model.sample_count} samples` : "collecting data",
+    payload.last_error ? `error: ${payload.last_error}` : ""
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
 
 function setLoading(isLoading) {
   searchButton.disabled = isLoading;
-  statusEl.textContent = isLoading ? "Loading..." : "";
+  statusMessage = isLoading ? "Loading..." : "";
+  renderStatus();
   errorEl.hidden = true;
 }
 
 function showError(message) {
-  statusEl.textContent = "";
+  statusMessage = "";
+  renderStatus();
   errorEl.textContent = message;
   errorEl.hidden = false;
   resultsEl.hidden = true;
@@ -93,7 +234,65 @@ function renderResults(payload) {
   resultsCount.textContent = `${games.length} game${games.length === 1 ? "" : "s"}`;
   resultsBody.replaceChildren(...games.map((game) => renderGameRow(game, payload.source || "espn")));
   resultsEl.hidden = false;
-  statusEl.textContent = games.length === 0 ? "No games found." : "";
+  statusMessage = games.length === 0 ? "No games found." : "";
+  renderStatus();
+}
+
+function renderStatus() {
+  const items = [];
+
+  if (statusMessage) {
+    const message = document.createElement("div");
+    message.textContent = statusMessage;
+    items.push(message);
+  }
+
+  const live = document.createElement("div");
+  live.className = "live-games-status";
+  if (!liveGamesLoaded) {
+    live.textContent = `Loading ${leagueLabel(currentLeague)} live games...`;
+  } else if (liveGamesError) {
+    live.textContent = `${leagueLabel(currentLeague)} live games unavailable: ${liveGamesError}`;
+  } else if (liveGames.length === 0) {
+    live.textContent = `No live ${leagueLabel(currentLeague)} games.`;
+  } else {
+    const title = document.createElement("div");
+    title.className = "live-games-title";
+    title.textContent = `Live ${leagueLabel(currentLeague)} games`;
+
+    const list = document.createElement("div");
+    list.className = "live-games-list";
+    list.append(...liveGames.map(renderLiveGameButton));
+    live.append(title, list);
+  }
+  items.push(live);
+
+  statusEl.replaceChildren(...items);
+}
+
+function renderLiveGameButton(game) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "live-game-button";
+  button.setAttribute("aria-label", `Open projections for ${game.name || game.short_name || "live game"}`);
+  button.addEventListener("click", () => {
+    void selectGame(game, button);
+  });
+
+  const matchup = document.createElement("span");
+  matchup.className = "live-game-matchup";
+  matchup.textContent = formatLiveGameMatchup(game);
+
+  const status = game.status?.detail || game.status?.description || "";
+  button.append(matchup);
+  if (status && status !== "-") {
+    const statusEl = document.createElement("span");
+    statusEl.className = "live-game-detail";
+    statusEl.textContent = status;
+    button.append(statusEl);
+  }
+
+  return button;
 }
 
 function renderGameRow(game, source) {
@@ -255,10 +454,11 @@ function renderSection(container, section, kind) {
 
 function liveMetrics(data) {
   const projection = data.live_projection || {};
+  const learned = projection.learned_projection;
   const teams = data.teams || {};
   const home = teams.home || {};
   const away = teams.away || {};
-  return [
+  const metrics = [
     {
       label: "Projected score",
       value: formatScoreLine(
@@ -282,6 +482,21 @@ function liveMetrics(data) {
     { label: "Remaining points", value: formatNullableNumber(projection.projected_remaining_points) },
     { label: "Over probability", value: formatProbability(projection.p_over) }
   ];
+  if (learned) {
+    metrics.push(
+      {
+        label: "Learned score",
+        value: formatScoreLine(
+          displayTeamCode(away, "Away"),
+          learned.projected_away_score,
+          displayTeamCode(home, "Home"),
+          learned.projected_home_score
+        )
+      },
+      { label: "Learned total", value: formatNumber(learned.projected_total) }
+    );
+  }
+  return metrics;
 }
 
 function historicalMetrics(data) {
@@ -289,15 +504,18 @@ function historicalMetrics(data) {
   const homeName = teams.home || "Home";
   const awayName = teams.away || "Away";
   const marketComparison = data.market_comparison || {};
-  return [
+  const metrics = [
     {
       label: "Projected score",
       value: formatScoreLine(awayName, data.projected_away_score, homeName, data.projected_home_score)
     },
     { label: "Projected total", value: formatNumber(data.projected_total) },
-    { label: "Home margin", value: formatNullableNumber(data.projected_home_margin) },
-    { label: "Market total", value: formatNullableNumber(marketComparison.market_total) }
+    { label: "Home margin", value: formatNullableNumber(data.projected_home_margin) }
   ];
+  if (typeof marketComparison.market_total === "number" && Number.isFinite(marketComparison.market_total)) {
+    metrics.push({ label: "Pregame market total", value: formatNullableNumber(marketComparison.market_total) });
+  }
+  return metrics;
 }
 
 function projectionNote(data, kind) {
@@ -305,6 +523,7 @@ function projectionNote(data, kind) {
     const quality = data.live_projection?.data_quality;
     const inputs = data.live_projection?.model_inputs || {};
     const marketDifference = data.live_projection?.difference_vs_market;
+    const learned = data.live_projection?.learned_projection;
     if (!quality) {
       return "";
     }
@@ -321,6 +540,7 @@ function projectionNote(data, kind) {
       quality.status ? `Status: ${quality.status}` : "",
       quality.recent_scoring_source ? `Source: ${quality.recent_scoring_source}` : "",
       recentWindow,
+      learned ? `Learned model: ${learned.sample_count} samples` : "",
       marketNote,
       warnings[0] || ""
     ]
@@ -328,7 +548,12 @@ function projectionNote(data, kind) {
       .join(" | ");
   }
 
-  return data.game_date ? `Game date: ${data.game_date}` : "";
+  return [
+    "Historical baseline; live in-game state and live market movement are excluded.",
+    data.game_date ? `Game date: ${data.game_date}` : ""
+  ]
+    .filter(Boolean)
+    .join(" | ");
 }
 
 function resetProjectionDetail(game) {
@@ -505,6 +730,15 @@ function formatScoreStatus(game) {
   return status || "-";
 }
 
+function formatLiveGameMatchup(game) {
+  const away = game.teams?.away;
+  const home = game.teams?.home;
+  return `${displayTeamCode(away, "Away")} ${formatNullableNumber(away?.score)} - ${displayTeamCode(
+    home,
+    "Home"
+  )} ${formatNullableNumber(home?.score)}`;
+}
+
 function formatScoreLine(awayName, awayScore, homeName, homeScore) {
   return `${awayName} ${formatNullableNumber(awayScore)} - ${homeName} ${formatNullableNumber(homeScore)}`;
 }
@@ -528,6 +762,19 @@ function formatNullableNumber(value) {
 
 function formatProbability(value) {
   return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)}%` : "-";
+}
+
+function formatTrainingError(payload) {
+  const training = payload.tracker?.training;
+  const collected = payload.tracker?.snapshots;
+  if (training && typeof collected === "number") {
+    return `${payload.error || "Training failed."} ${collected} collected snapshots, ${training.snapshots || 0} finalized trainable snapshots.`;
+  }
+  return payload.error || "Training failed.";
+}
+
+function leagueLabel(league) {
+  return String(league || "").toUpperCase();
 }
 
 function formatSignedNumber(value) {

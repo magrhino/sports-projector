@@ -130,6 +130,44 @@ describe("NBA live projection model", () => {
       source: "kalshi_game_stats"
     });
   });
+
+  it("ignores impossible recent scoring inputs instead of over-projecting totals", () => {
+    const result = projectLiveNbaScore({
+      currentHomeScore: 29,
+      currentAwayScore: 38,
+      period: 2,
+      clock: "7:31",
+      marketTotalLine: 208.5,
+      recentPoints: 65,
+      recentMinutes: 4,
+      recentHomePoints: 29,
+      recentAwayPoints: 36,
+      isPlayoffs: true
+    });
+
+    expect(result.model_inputs.recent_points).toBeNull();
+    expect(result.projected_total).toBeLessThan(210);
+  });
+
+  it("rejects implausibly hot recent play-by-play windows", () => {
+    const recent = extractRecentScoringFromGameStats({
+      pbp: {
+        periods: [
+          {
+            number: 2,
+            events: [{ clock: "8:00", home_score: 20, away_score: 20 }]
+          }
+        ]
+      },
+      period: 2,
+      clock: "7:00",
+      currentHomeScore: 30,
+      currentAwayScore: 30,
+      windowMinutes: 1
+    });
+
+    expect(recent).toBeNull();
+  });
 });
 
 describe("project_nba_live_score MCP tool", () => {
