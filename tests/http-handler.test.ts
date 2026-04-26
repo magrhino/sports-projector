@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
 import { createHttpHandler } from "../src/http/index.js";
+import type { HistoricalRefreshHttpContext } from "../src/http/historical-refresh.js";
+import { HistoricalRefreshScheduler } from "../src/nba/historical-refresh.js";
 import type { LiveTrackingHttpContext } from "../src/http/live-tracking.js";
 import { HistoricalProjectionClient } from "../src/nba/historical-client.js";
 import { LiveTrackingStore } from "../src/nba/live-tracking-store.js";
@@ -135,6 +137,25 @@ describe("createHttpHandler", () => {
     expect(JSON.parse(response.body).tracker.training.snapshots).toBe(0);
   });
 
+  it("returns historical refresh status", async () => {
+    const context = createHistoricalRefreshContext();
+    const response = await callHandler(
+      createHttpHandler({
+        historicalRefreshContext: context
+      }),
+      "/api/nba/historical-refresh/status"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      enabled: true,
+      running: false,
+      recent_days: 3,
+      lookahead_days: 2,
+      event_ids: ["2467180"]
+    });
+  });
+
   it("returns a training error when there are not enough finalized snapshots", async () => {
     const context = createLiveTrackingContext();
     try {
@@ -246,6 +267,26 @@ function createLiveTrackingContext(): LiveTrackingHttpContext & { cleanup: () =>
     store,
     tracker: null,
     cleanup: () => rmSync(dir, { recursive: true, force: true })
+  };
+}
+
+function createHistoricalRefreshContext(): HistoricalRefreshHttpContext {
+  return {
+    scheduler: new HistoricalRefreshScheduler(
+      {
+        enabled: true,
+        intervalSeconds: 3600,
+        recentDays: 3,
+        lookaheadDays: 2,
+        eventIds: ["2467180"],
+        sportsDbApiKey: "123",
+        python: "python3",
+        root: "/repo",
+        artifactDir: "/repo/data/historical",
+        timeoutMs: 30000
+      },
+      async () => ({ stdout: "{\"ok\":true}", stderr: "" })
+    )
   };
 }
 

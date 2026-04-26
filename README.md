@@ -144,6 +144,12 @@ All configuration is optional.
 | `SPORTS_PROJECTOR_HISTORICAL_ROOT` | current working directory | Project root used to set `PYTHONPATH` for `python/nba_historical_projection` |
 | `SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR` | `data/historical` under the root | Local artifact directory containing `manifest.json` and model files |
 | `SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS` | `30000` | Clamped from 1000 to 120000 ms |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED` | `true` | Starts the web app historical SportsDB refresh scheduler unless set to `false` |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_INTERVAL_SECONDS` | `3600` | Historical refresh interval, clamped from 60 to 86400 seconds |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS` | `3` | Past day window added to SportsDB imports |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS` | `2` | Future day window added for prediction snapshots |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS` | empty | Comma-separated SportsDB event IDs to force into scheduled refreshes |
+| `SPORTS_PROJECTOR_SPORTSDB_API_KEY` | `123` | SportsDB API key used by the scheduled historical refresh |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED` | `false` | Starts the web app NBA live-game tracker when true |
 | `SPORTS_PROJECTOR_LIVE_DB_PATH` | `data/live-tracking/nba-live.sqlite` | Local SQLite path for live snapshots and trained models |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Live tracker polling interval, clamped from 5 to 300 seconds |
@@ -175,11 +181,19 @@ The local generated state files are:
 - `data/historical/artifact_manifest.json`: inventory of local model/team-stat artifacts, feature counts, file sizes, date-table ranges when SQLite team stats are configured, and validation status.
 - `data/historical/artifact_import_log.jsonl`: append-only summaries for validation and training runs.
 
-SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports.
+SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports. Imports supplement season payloads with recent day events, upcoming day snapshots, and each team's latest event because some SportsDB season responses are capped or stale.
 
 ```bash
 PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
   --artifact-dir data/historical
+```
+
+To force a known SportsDB event into the artifacts:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --event-id 2467180
 ```
 
 To pin seasons explicitly:
@@ -191,7 +205,13 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
   --season 2025-2026
 ```
 
-SportsDB import is intentionally present-day weighted by default. Use `--lookback-seasons` to widen or narrow the rolling history. The importer uses only pregame features derived from prior completed games for each training row; future scheduled games can create prediction snapshot tables but are excluded from model targets until scores are available.
+SportsDB import is intentionally present-day weighted by default. Use `--lookback-seasons` to widen or narrow the rolling history, and `--recent-days` / `--lookahead-days` to adjust the current refresh window. The importer uses only pregame features derived from prior completed games for each training row; future scheduled games can create prediction snapshot tables but are excluded from model targets until scores are available.
+
+The web process runs the same SportsDB import on a schedule by default. Disable it with `SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED=false`, or inspect it with:
+
+```bash
+curl "http://localhost:8080/api/nba/historical-refresh/status"
+```
 
 Optional local CSVs can enrich the offline artifacts without adding live network origins:
 
@@ -230,7 +250,7 @@ Allowed network origins:
 
 - `https://site.api.espn.com`
 - `https://api.elections.kalshi.com`
-- `https://www.thesportsdb.com` for the offline historical import command only
+- `https://www.thesportsdb.com` for the historical import command and default scheduled historical refresh
 
 v1 builds URLs from known path segments and validated query/path parameters only. User input is not treated as a URL.
 

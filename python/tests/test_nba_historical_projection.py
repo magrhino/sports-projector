@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 
@@ -526,6 +526,54 @@ class HistoricalProjectionTests(unittest.TestCase):
 
             self.assertEqual(result["seasons"], ["2025-2026"])
 
+    def test_sportsdb_import_supplements_limited_season_data_with_recent_sources(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(current_data=True),
+                today=date(2026, 4, 25),
+                recent_days=1,
+                lookahead_days=1,
+                event_ids=["2467180"],
+            )
+
+            self.assertEqual(result["raw_recent_day_files"], 3)
+            self.assertEqual(result["raw_team_last_files"], 3)
+            self.assertEqual(result["raw_event_files"], 1)
+            self.assertGreaterEqual(result["supplemental_events"], 4)
+            self.assertTrue((root / "sportsdb" / "raw" / "nba" / "recent" / "days" / "2026-04-25.json").is_file())
+            self.assertTrue((root / "sportsdb" / "raw" / "nba" / "events" / "2467180.json").is_file())
+
+            with sqlite3.connect(root / "sportsdb" / "normalized" / "nba_games.sqlite") as connection:
+                connection.row_factory = sqlite3.Row
+                duplicate = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ? AND "TEAM_NAME" = ?',
+                    ("2026-04-25", "Boston Celtics"),
+                ).fetchone()
+                exact = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ? AND "TEAM_NAME" = ?',
+                    ("2026-04-25", "Phoenix Suns"),
+                ).fetchone()
+                upcoming = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2026-04-26",),
+                ).fetchall()
+
+            self.assertIsNotNone(duplicate)
+            self.assertEqual(duplicate["Score"], 221.0)
+            self.assertIsNotNone(exact)
+            self.assertEqual(exact["Score"], 230.0)
+            self.assertEqual(upcoming, [])
+
+            with sqlite3.connect(root / "sportsdb" / "normalized" / "nba_team_stats.sqlite") as connection:
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    ("2026-04-26",),
+                ).fetchone()
+            self.assertIsNotNone(table)
+
     def test_sportsdb_training_features_reset_at_season_boundaries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -602,8 +650,9 @@ class HistoricalProjectionTests(unittest.TestCase):
 
 
 class FakeSportsDbClient:
-    def __init__(self, stale_season_list=False):
+    def __init__(self, stale_season_list=False, current_data=False):
         self.stale_season_list = stale_season_list
+        self.current_data = current_data
 
     def fetch_all_seasons(self, league_id: str):
         self.assert_nba_league(league_id)
@@ -629,9 +678,9 @@ class FakeSportsDbClient:
             raise AssertionError(f"unexpected league: {league_name}")
         return {
             "teams": [
-                {"strTeam": "Boston Celtics"},
-                {"strTeam": "New York Knicks"},
-                {"strTeam": "Brooklyn Nets"},
+                {"idTeam": "1", "strTeam": "Boston Celtics"},
+                {"idTeam": "2", "strTeam": "New York Knicks"},
+                {"idTeam": "3", "strTeam": "Brooklyn Nets"},
             ]
         }
 
@@ -646,6 +695,45 @@ class FakeSportsDbClient:
                 self.event("1003", "2025-10-24", "New York Knicks", "Brooklyn Nets", 109, 101),
                 self.event("1004", "2025-10-26", "Boston Celtics", "Brooklyn Nets", 111, 104),
                 self.event("1005", "2026-04-25", "Boston Celtics", "New York Knicks", None, None),
+            ]
+        }
+
+    def fetch_day_events(self, league_id: str, date: str):
+        self.assert_nba_league(league_id)
+        if not self.current_data:
+            return {"events": []}
+        if date == "2026-04-25":
+            return {
+                "events": [
+                    self.event("1005", "2026-04-25", "Boston Celtics", "New York Knicks", 111, 110),
+                    self.event("2001", "2026-04-25", "Brooklyn Nets", "Boston Celtics", 99, 103),
+                ]
+            }
+        if date == "2026-04-26":
+            return {
+                "events": [
+                    self.event("3001", "2026-04-26", "New York Knicks", "Brooklyn Nets", None, None),
+                ]
+            }
+        return {"events": []}
+
+    def fetch_team_last_events(self, team_id: str):
+        if not self.current_data:
+            return {"results": []}
+        if team_id == "3":
+            return {
+                "results": [
+                    self.event("2002", "2026-04-24", "Brooklyn Nets", "New York Knicks", 120, 118),
+                ]
+            }
+        return {"results": []}
+
+    def fetch_event(self, event_id: str):
+        if event_id != "2467180":
+            raise AssertionError(f"unexpected event id: {event_id}")
+        return {
+            "events": [
+                self.event("2467180", "2026-04-25", "Phoenix Suns", "Oklahoma City Thunder", 109, 121),
             ]
         }
 

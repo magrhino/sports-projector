@@ -89,6 +89,15 @@ class SportsDbClient:
     def fetch_season_events(self, league_id: str, season: str) -> dict[str, Any]:
         return self.fetch_json("eventsseason.php", {"id": league_id, "s": season})
 
+    def fetch_day_events(self, league_id: str, date: str) -> dict[str, Any]:
+        return self.fetch_json("eventsday.php", {"d": date, "l": league_id})
+
+    def fetch_team_last_events(self, team_id: str) -> dict[str, Any]:
+        return self.fetch_json("eventslast.php", {"id": team_id})
+
+    def fetch_event(self, event_id: str) -> dict[str, Any]:
+        return self.fetch_json("lookupevent.php", {"id": event_id})
+
     def fetch_json(
         self,
         endpoint: str,
@@ -134,4 +143,3 @@ def write_raw_json(path: Path, value: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
-

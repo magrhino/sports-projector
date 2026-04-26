@@ -82,6 +82,14 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--availability-csv")
     sportsdb_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="auto")
     sportsdb_parser.add_argument("--validation-splits", type=int, default=3)
+    sportsdb_parser.add_argument("--recent-days", type=int, default=3)
+    sportsdb_parser.add_argument("--lookahead-days", type=int, default=2)
+    sportsdb_parser.add_argument("--event-id", action="append", default=[])
+    sportsdb_parser.add_argument(
+        "--no-team-last-events",
+        action="store_true",
+        help="Do not supplement the season import with each team's latest SportsDB event.",
+    )
     sportsdb_parser.add_argument(
         "--no-write-state",
         action="store_true",
@@ -176,6 +184,10 @@ def main(argv: list[str] | None = None) -> int:
                 availability_csv=args.availability_csv,
                 model_kind=args.model_kind,
                 validation_splits=args.validation_splits,
+                recent_days=args.recent_days,
+                lookahead_days=args.lookahead_days,
+                event_ids=args.event_id,
+                include_team_last_events=not args.no_team_last_events,
             )
             write_json(result)
             return 0

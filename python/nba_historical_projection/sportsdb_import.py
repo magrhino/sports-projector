@@ -5,7 +5,7 @@ import json
 import math
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
@@ -45,6 +45,15 @@ class SportsDbImportClient(Protocol):
     def fetch_season_events(self, league_id: str, season: str) -> dict[str, Any]:
         ...
 
+    def fetch_day_events(self, league_id: str, date: str) -> dict[str, Any]:
+        ...
+
+    def fetch_team_last_events(self, team_id: str) -> dict[str, Any]:
+        ...
+
+    def fetch_event(self, event_id: str) -> dict[str, Any]:
+        ...
+
 
 @dataclass(frozen=True)
 class SportsDbGame:
@@ -59,6 +68,12 @@ class SportsDbGame:
     @property
     def is_final(self) -> bool:
         return self.home_score is not None and self.away_score is not None
+
+
+@dataclass(frozen=True)
+class SportsDbTeam:
+    team_id: str
+    name: str
 
 
 @dataclass
@@ -112,6 +127,11 @@ def import_sportsdb_artifacts(
     availability_csv: str | Path | None = None,
     model_kind: str = "auto",
     validation_splits: int = 3,
+    recent_days: int = 3,
+    lookahead_days: int = 2,
+    event_ids: list[str] | None = None,
+    include_team_last_events: bool = True,
+    today: date | datetime | None = None,
     client: SportsDbImportClient | None = None,
 ) -> dict[str, Any]:
     if sport not in SPORT_CONFIGS:
@@ -134,6 +154,10 @@ def import_sportsdb_artifacts(
         raise SportsDbError("No SportsDB seasons selected for import")
     if model_kind not in {"direct", "market-residual", "auto"}:
         raise SportsDbError("model_kind must be direct, market-residual, or auto")
+    if recent_days < 0:
+        raise SportsDbError("recent_days must be at least 0")
+    if lookahead_days < 0:
+        raise SportsDbError("lookahead_days must be at least 0")
 
     raw_root = root / "sportsdb" / "raw" / sport
     normalized_root = root / "sportsdb" / "normalized"
@@ -151,10 +175,24 @@ def import_sportsdb_artifacts(
         write_raw_json(raw_root / "seasons" / f"{season}.json", payload)
         games.extend(parse_games(payload, fallback_season=season))
 
-    games = sorted(games, key=lambda game: (game.date, game.event_id))
+    supplemental_summary = collect_supplemental_games(
+        provider_client,
+        config.league_id,
+        raw_root,
+        selected_seasons,
+        teams,
+        recent_days=recent_days,
+        lookahead_days=lookahead_days,
+        event_ids=event_ids or [],
+        include_team_last_events=include_team_last_events,
+        today=today,
+    )
+    games.extend(supplemental_summary["games"])
+
+    games = dedupe_games(games)
     if not games:
         raise SportsDbError("SportsDB import found no NBA events")
-    team_names = sorted(set(teams) | {game.home_team for game in games} | {game.away_team for game in games})
+    team_names = sorted({team.name for team in teams} | {game.home_team for game in games} | {game.away_team for game in games})
     dataset_path = normalized_root / "nba_games.sqlite"
     team_stats_path = normalized_root / "nba_team_stats.sqlite"
     market_lines = load_market_lines_csv(market_lines_csv) if market_lines_csv else {}
@@ -202,6 +240,10 @@ def import_sportsdb_artifacts(
             "api_key": "123" if api_key == DEFAULT_SPORTSDB_API_KEY else "configured",
             "rate_limit_per_minute": rate_limit_per_minute,
             "seasons": selected_seasons,
+            "recent_days": recent_days,
+            "lookahead_days": lookahead_days,
+            "event_ids": event_ids or [],
+            "team_last_events": include_team_last_events,
         },
         "data_sources": {
             "market_lines": data_source_summary(market_lines_csv, len(market_lines)),
@@ -238,6 +280,10 @@ def import_sportsdb_artifacts(
         "sport": sport,
         "seasons": selected_seasons,
         "raw_season_files": len(season_payloads),
+        "raw_recent_day_files": supplemental_summary["day_payloads"],
+        "raw_team_last_files": supplemental_summary["team_payloads"],
+        "raw_event_files": supplemental_summary["event_payloads"],
+        "supplemental_events": supplemental_summary["event_count"],
         "events": len(games),
         "final_games": len(training_rows),
         "snapshot_dates": snapshot_dates,
@@ -260,6 +306,105 @@ def import_sportsdb_artifacts(
     }
 
 
+def collect_supplemental_games(
+    client: SportsDbImportClient,
+    league_id: str,
+    raw_root: Path,
+    selected_seasons: list[str],
+    teams: list[SportsDbTeam],
+    recent_days: int,
+    lookahead_days: int,
+    event_ids: list[str],
+    include_team_last_events: bool,
+    today: date | datetime | None,
+) -> dict[str, Any]:
+    games: list[SportsDbGame] = []
+    forced_games: list[SportsDbGame] = []
+    day_payloads = 0
+    team_payloads = 0
+    event_payloads = 0
+    current_date = current_import_date(today)
+
+    for event_date in supplemental_event_dates(current_date, recent_days, lookahead_days):
+        date_text = event_date.isoformat()
+        payload = client.fetch_day_events(league_id, date_text)
+        day_payloads += 1
+        write_raw_json(raw_root / "recent" / "days" / f"{date_text}.json", payload)
+        games.extend(parse_games(payload, fallback_season=season_for_date(event_date)))
+
+    if include_team_last_events:
+        for team in teams:
+            if not team.team_id:
+                continue
+            payload = client.fetch_team_last_events(team.team_id)
+            team_payloads += 1
+            write_raw_json(raw_root / "recent" / "team-last" / f"{safe_filename(team.team_id)}.json", payload)
+            games.extend(parse_games(payload, fallback_season=season_for_date(current_date)))
+
+    for event_id in sorted(set(clean_string(value) for value in event_ids if clean_string(value))):
+        payload = client.fetch_event(event_id)
+        event_payloads += 1
+        write_raw_json(raw_root / "events" / f"{safe_filename(event_id)}.json", payload)
+        forced_games.extend(parse_games(payload, fallback_season=season_for_date(current_date)))
+
+    filtered_games = [
+        game
+        for game in games
+        if not selected_seasons or game.season in selected_seasons
+    ] + forced_games
+
+    return {
+        "games": filtered_games,
+        "day_payloads": day_payloads,
+        "team_payloads": team_payloads,
+        "event_payloads": event_payloads,
+        "event_count": len(dedupe_games(filtered_games)),
+    }
+
+
+def current_import_date(value: date | datetime | None) -> date:
+    if value is None:
+        return datetime.now().date()
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
+def supplemental_event_dates(current_date: date, recent_days: int, lookahead_days: int) -> list[date]:
+    start = current_date - timedelta(days=recent_days)
+    end = current_date + timedelta(days=lookahead_days)
+    return [
+        start + timedelta(days=offset)
+        for offset in range((end - start).days + 1)
+    ]
+
+
+def season_for_date(value: date) -> str:
+    start_year = value.year if value.month >= 10 else value.year - 1
+    return f"{start_year}-{start_year + 1}"
+
+
+def safe_filename(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
+
+
+def dedupe_games(games: list[SportsDbGame]) -> list[SportsDbGame]:
+    by_id: dict[str, SportsDbGame] = {}
+    for game in games:
+        current = by_id.get(game.event_id)
+        if current is None or game_quality(game) >= game_quality(current):
+            by_id[game.event_id] = game
+    return sorted(by_id.values(), key=lambda game: (game.date, game.event_id))
+
+
+def game_quality(game: SportsDbGame) -> int:
+    if game.home_score is not None and game.away_score is not None:
+        return 3
+    if game.home_score is not None or game.away_score is not None:
+        return 2
+    return 1
+
+
 def parse_seasons(payload: dict[str, Any]) -> list[str]:
     seasons = payload.get("seasons")
     if not isinstance(seasons, list):
@@ -272,18 +417,19 @@ def parse_seasons(payload: dict[str, Any]) -> list[str]:
     return sorted(set(parsed), key=season_sort_key)
 
 
-def parse_teams(payload: dict[str, Any]) -> list[str]:
+def parse_teams(payload: dict[str, Any]) -> list[SportsDbTeam]:
     teams = payload.get("teams")
     if not isinstance(teams, list):
         return []
-    parsed = []
+    parsed: list[SportsDbTeam] = []
     for item in teams:
         if not isinstance(item, dict):
             continue
         name = clean_string(item.get("strTeam"))
+        team_id = clean_string(item.get("idTeam"))
         if name:
-            parsed.append(name)
-    return sorted(set(parsed))
+            parsed.append(SportsDbTeam(team_id=team_id, name=name))
+    return sorted({team.name: team for team in parsed}.values(), key=lambda team: team.name)
 
 
 def load_market_lines_csv(path: str | Path) -> dict[tuple[str, str, str], MarketLine]:
@@ -396,8 +542,8 @@ def season_sort_key(season: str) -> tuple[int, str]:
 
 
 def parse_games(payload: dict[str, Any], fallback_season: str) -> list[SportsDbGame]:
-    events = payload.get("events")
-    if not isinstance(events, list):
+    events = event_items(payload)
+    if not events:
         return []
     games = []
     for event in events:
@@ -407,6 +553,14 @@ def parse_games(payload: dict[str, Any], fallback_season: str) -> list[SportsDbG
         if game is not None:
             games.append(game)
     return games
+
+
+def event_items(payload: dict[str, Any]) -> list[Any]:
+    for key in ("events", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
 
 
 def parse_game(event: dict[str, Any], fallback_season: str) -> SportsDbGame | None:

@@ -155,6 +155,23 @@ curl -X POST "http://localhost:8080/api/nba/live-model/train"
 
 Back up `SPORTS_PROJECTOR_LIVE_DB_PATH` before moving or replacing a production deployment if you want to preserve collected snapshots and trained live models.
 
+## Historical refresh
+
+The web process refreshes SportsDB historical artifacts by default. Disable this if artifacts are managed by cron, systemd, or another operator workflow:
+
+```bash
+SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED=false \
+npm run start:web
+```
+
+The scheduler runs `python -m nba_historical_projection import-sportsdb`, skips overlapping runs, and exposes status at:
+
+```bash
+curl "http://localhost:8080/api/nba/historical-refresh/status"
+```
+
+For external scheduling, disable the in-process scheduler and run `PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb --artifact-dir data/historical` from cron or systemd on the desired interval.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -169,6 +186,12 @@ Back up `SPORTS_PROJECTOR_LIVE_DB_PATH` before moving or replacing a production 
 | `SPORTS_PROJECTOR_HISTORICAL_ROOT` | current working directory | Project root used to set `PYTHONPATH` for historical projection |
 | `SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR` | `data/historical` under the root | Artifact directory containing `manifest.json` and model files |
 | `SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS` | `30000` | Historical command timeout, clamped from 1000 to 120000 ms |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED` | `true` | Enables scheduled SportsDB historical artifact refreshes |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_INTERVAL_SECONDS` | `3600` | Historical refresh interval, clamped from 60 to 86400 seconds |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS` | `3` | Past day window included in scheduled imports |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS` | `2` | Future day window included for prediction snapshots |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS` | empty | Comma-separated SportsDB event IDs to force into scheduled imports |
+| `SPORTS_PROJECTOR_SPORTSDB_API_KEY` | `123` | SportsDB API key for scheduled historical refreshes |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED` | `false` | Enables NBA live-game polling and snapshot persistence |
 | `SPORTS_PROJECTOR_LIVE_DB_PATH` | `data/live-tracking/nba-live.sqlite` | SQLite path for live snapshots and trained models |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Tracker polling interval, clamped from 5 to 300 seconds |
@@ -183,7 +206,7 @@ Production deployments should allow outbound HTTPS to:
 |--------|----------|
 | `https://site.api.espn.com` | Public scoreboard, schedule, summary, and standings data |
 | `https://api.elections.kalshi.com` | Public Kalshi market, orderbook, trade, event, milestone, and live-data endpoints |
-| `https://www.thesportsdb.com` | Offline historical import command only |
+| `https://www.thesportsdb.com` | Historical import command and default scheduled historical refresh |
 
 User input is validated as path/query data, not treated as arbitrary URLs.
 

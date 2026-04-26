@@ -3,10 +3,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
+import { HistoricalRefreshScheduler, historicalRefreshConfigFromEnv } from "../nba/historical-refresh.js";
 import type { HistoricalProjectionClient } from "../nba/historical-client.js";
 import { maybeCreateLiveTracker } from "../nba/live-tracker.js";
 import { liveTrackingConfig, LiveTrackingStore, type LiveTrackingConfig } from "../nba/live-tracking-store.js";
 import { getLiveGames, searchGamesByTeam } from "./games-search.js";
+import {
+  getHistoricalRefreshStatus,
+  type HistoricalRefreshHttpContext
+} from "./historical-refresh.js";
 import {
   getLiveTrackingStatus,
   trainLiveModel,
@@ -24,6 +29,7 @@ export function createHttpHandler(
     historicalClient?: HistoricalProjectionClient;
     liveTrackingContext?: LiveTrackingHttpContext | null;
     liveTrackingConfig?: LiveTrackingConfig;
+    historicalRefreshContext?: HistoricalRefreshHttpContext | null;
   } = {}
 ) {
   const publicDir = path.resolve(input.publicDir ?? process.env.SPORTS_PROJECTOR_PUBLIC_DIR ?? "public");
@@ -34,6 +40,7 @@ export function createHttpHandler(
     input.liveTrackingContext !== undefined
       ? input.liveTrackingContext
       : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient);
+  const historicalRefreshContext = input.historicalRefreshContext ?? null;
 
   return async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let url: URL;
@@ -64,6 +71,11 @@ export function createHttpHandler(
       return;
     }
 
+    if (url.pathname === "/api/nba/historical-refresh/status") {
+      await handleHistoricalRefreshStatus(request, response, historicalRefreshContext);
+      return;
+    }
+
     if (url.pathname === "/api/games/search") {
       await handleGamesSearch(request, response, url, espnClient);
       return;
@@ -81,6 +93,15 @@ export function createHttpHandler(
 
     await serveStatic(request, response, publicDir, url.pathname);
   };
+}
+
+function createHistoricalRefreshContext(): HistoricalRefreshHttpContext | null {
+  const scheduler = new HistoricalRefreshScheduler(historicalRefreshConfigFromEnv());
+  if (!scheduler.config.enabled) {
+    return null;
+  }
+  scheduler.start();
+  return { scheduler };
 }
 
 function createLiveTrackingContext(
@@ -189,6 +210,21 @@ async function handleLiveModelTrain(
   writeJson(response, result.status, result.body);
 }
 
+async function handleHistoricalRefreshStatus(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: HistoricalRefreshHttpContext | null
+): Promise<void> {
+  if (request.method !== "GET") {
+    response.setHeader("allow", "GET");
+    writeJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const result = getHistoricalRefreshStatus(context);
+  writeJson(response, result.status, result.body);
+}
+
 async function serveStatic(
   request: IncomingMessage,
   response: ServerResponse,
@@ -275,7 +311,9 @@ function isNotFound(error: unknown): boolean {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  const server = createServer(createHttpHandler());
+  const server = createServer(createHttpHandler({
+    historicalRefreshContext: createHistoricalRefreshContext()
+  }));
 
   server.listen(port, () => {
     console.error(`sports-projector web app listening on http://localhost:${port}`);
