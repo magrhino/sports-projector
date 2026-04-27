@@ -67,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     train_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="direct")
     train_parser.add_argument("--early-stopping-rounds", type=int, default=25)
     train_parser.add_argument("--validation-splits", type=int, default=3)
+    train_parser.add_argument("--calibration", choices=["none", "empirical", "isotonic", "platt", "auto"], default="auto")
+    train_parser.add_argument("--quantiles")
+    train_parser.add_argument("--experimental-market-decorrelation", action="store_true")
 
     sportsdb_parser = subparsers.add_parser(
         "import-sportsdb",
@@ -82,6 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--availability-csv")
     sportsdb_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="auto")
     sportsdb_parser.add_argument("--validation-splits", type=int, default=3)
+    sportsdb_parser.add_argument("--calibration", choices=["none", "empirical", "isotonic", "platt", "auto"], default="auto")
+    sportsdb_parser.add_argument("--quantiles")
+    sportsdb_parser.add_argument("--rating-features", choices=["none", "market"], default="none")
+    sportsdb_parser.add_argument("--rating-line-source", choices=["open", "close", "provided"], default="close")
+    sportsdb_parser.add_argument("--skill-features", choices=["none", "score-based"], default="none")
+    sportsdb_parser.add_argument("--experimental-market-decorrelation", action="store_true")
     sportsdb_parser.add_argument("--recent-days", type=int, default=3)
     sportsdb_parser.add_argument("--lookahead-days", type=int, default=2)
     sportsdb_parser.add_argument("--event-id", action="append", default=[])
@@ -151,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
                 model_kind=args.model_kind,
                 early_stopping_rounds=args.early_stopping_rounds,
                 validation_splits=args.validation_splits,
+                calibration=args.calibration,
+                quantiles=args.quantiles,
+                experimental_market_decorrelation=args.experimental_market_decorrelation,
             )
             result = {
                 "ok": True,
@@ -184,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
                 availability_csv=args.availability_csv,
                 model_kind=args.model_kind,
                 validation_splits=args.validation_splits,
+                calibration=args.calibration,
+                quantiles=args.quantiles,
+                rating_features=args.rating_features,
+                rating_line_source=args.rating_line_source,
+                skill_features=args.skill_features,
+                experimental_market_decorrelation=args.experimental_market_decorrelation,
                 recent_days=args.recent_days,
                 lookahead_days=args.lookahead_days,
                 event_ids=args.event_id,
@@ -231,6 +249,12 @@ def evaluation_summary(artifact_dir: str, manifest: dict[str, Any]) -> dict[str,
         "artifact_dir": str(Path(artifact_dir)),
         "generated_at": manifest.get("generated_at"),
         "data_sources": manifest.get("data_sources", {}),
+        "feature_generators": manifest.get("feature_generators", {}),
+        "calibration": manifest.get("calibration", {}),
+        "quantile_models": manifest.get("quantile_models", {}),
+        "rating_features": manifest.get("rating_features", {}),
+        "skill_features": manifest.get("skill_features", {}),
+        "validation_reports": manifest.get("validation_reports", {}),
         "models": {
             key: {
                 "type": config.get("type"),

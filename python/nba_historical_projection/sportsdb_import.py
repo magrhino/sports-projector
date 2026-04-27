@@ -19,6 +19,24 @@ from .training import (
     metrics_from_residuals,
     target_column_for,
 )
+from .calibration import CalibrationEvent, empirical_probability, fit_probability_calibrator
+from .market_diagnostics import market_decorrelation_report
+from .quantiles import DEFAULT_QUANTILES, parse_quantiles, quantile_summary
+from .team_ratings import (
+    MARKET_RATING_COLUMNS,
+    MarketRatingState,
+    market_line_value,
+    market_rating_features,
+    market_rating_snapshot_features,
+    update_market_ratings,
+)
+from .team_skills import (
+    SKILL_FEATURE_COLUMNS,
+    ScoreSkillState,
+    score_skill_features,
+    score_skill_snapshot_features,
+    update_score_skills,
+)
 from .providers.sportsdb import (
     DEFAULT_RATE_LIMIT_PER_MINUTE,
     DEFAULT_SPORTSDB_API_KEY,
@@ -133,6 +151,12 @@ def import_sportsdb_artifacts(
     include_team_last_events: bool = True,
     today: date | datetime | None = None,
     client: SportsDbImportClient | None = None,
+    calibration: str = "auto",
+    quantiles: str | None = None,
+    rating_features: str = "none",
+    rating_line_source: str = "close",
+    skill_features: str = "none",
+    experimental_market_decorrelation: bool = False,
 ) -> dict[str, Any]:
     if sport not in SPORT_CONFIGS:
         raise SportsDbError(f"Unsupported SportsDB sport: {sport}")
@@ -154,6 +178,14 @@ def import_sportsdb_artifacts(
         raise SportsDbError("No SportsDB seasons selected for import")
     if model_kind not in {"direct", "market-residual", "auto"}:
         raise SportsDbError("model_kind must be direct, market-residual, or auto")
+    if calibration not in {"none", "empirical", "isotonic", "platt", "auto"}:
+        raise SportsDbError("calibration must be none, empirical, isotonic, platt, or auto")
+    if rating_features not in {"none", "market"}:
+        raise SportsDbError("rating_features must be none or market")
+    if rating_line_source not in {"open", "close", "provided"}:
+        raise SportsDbError("rating_line_source must be open, close, or provided")
+    if skill_features not in {"none", "score-based"}:
+        raise SportsDbError("skill_features must be none or score-based")
     if recent_days < 0:
         raise SportsDbError("recent_days must be at least 0")
     if lookahead_days < 0:
@@ -204,6 +236,9 @@ def import_sportsdb_artifacts(
         team_stats_path,
         market_lines=market_lines,
         availability=availability,
+        rating_features=rating_features,
+        rating_line_source=rating_line_source,
+        skill_features=skill_features,
     )
     if len(training_rows) < 2:
         raise SportsDbError("SportsDB import needs at least two final games to train artifacts")
@@ -225,6 +260,22 @@ def import_sportsdb_artifacts(
         "home_margin",
         model_kind,
         validation_splits,
+    )
+    validation_reports = build_validation_reports(
+        training_rows,
+        feature_columns,
+        {
+            "total_score": total_model,
+            "home_margin": margin_model,
+        },
+        {
+            "total_score": total_mode,
+            "home_margin": margin_mode,
+        },
+        validation_splits,
+        calibration,
+        parse_quantiles(quantiles) or ([] if quantiles is None else DEFAULT_QUANTILES),
+        experimental_market_decorrelation,
     )
     write_model(model_dir / "total_score.json", total_model)
     write_model(model_dir / "home_margin.json", margin_model)
@@ -252,6 +303,11 @@ def import_sportsdb_artifacts(
         "seasons": selected_seasons,
         "feature_columns": feature_columns,
         "feature_defaults": feature_defaults,
+        "feature_generators": {
+            "rating_features": rating_features,
+            "rating_line_source": rating_line_source,
+            "skill_features": skill_features,
+        },
         "team_stats": {
             "type": "sqlite",
             "path": str(team_stats_path.relative_to(root)),
@@ -270,6 +326,18 @@ def import_sportsdb_artifacts(
                 **margin_model["metrics"],
             },
         },
+        "calibration": validation_reports.get("calibration", {}),
+        "quantile_models": validation_reports.get("quantile_models", {}),
+        "rating_features": {
+            "enabled": rating_features == "market",
+            "columns": [column for column in MARKET_RATING_COLUMNS if column in feature_columns],
+            "line_source": rating_line_source,
+        },
+        "skill_features": {
+            "enabled": skill_features == "score-based",
+            "columns": [column for column in SKILL_FEATURE_COLUMNS if column in feature_columns],
+        },
+        "validation_reports": validation_reports,
     }
     write_json(root / "manifest.json", manifest)
     inventory = build_artifact_inventory(root)
@@ -297,6 +365,8 @@ def import_sportsdb_artifacts(
             if row.get("HOME_UNAVAILABLE_MINUTES", 0.0) or row.get("AWAY_UNAVAILABLE_MINUTES", 0.0)
         ),
     }
+    if validation_reports:
+        summary["validation_reports"] = validation_reports
     if log_run:
         append_run_log(root, "import-sportsdb", summary)
     return {
@@ -590,6 +660,9 @@ def build_training_and_snapshots(
     team_stats_path: Path,
     market_lines: dict[tuple[str, str, str], MarketLine] | None = None,
     availability: dict[tuple[str, str], Availability] | None = None,
+    rating_features: str = "none",
+    rating_line_source: str = "close",
+    skill_features: str = "none",
 ) -> tuple[list[dict[str, Any]], int]:
     training_rows: list[dict[str, Any]] = []
     snapshot_dates = 0
@@ -601,11 +674,20 @@ def build_training_and_snapshots(
     with sqlite3.connect(dataset_path) as dataset_connection, sqlite3.connect(team_stats_path) as stats_connection:
         for season in sorted({game.season for game in games}, key=season_sort_key):
             states = {team: TeamState() for team in team_names}
+            market_states = {team: MarketRatingState() for team in team_names}
+            skill_states = {team: ScoreSkillState() for team in team_names}
             season_games = [game for game in games if game.season == season]
             first_season_date = min((game.date for game in season_games), default=None)
             for date in sorted({game.date for game in season_games}):
                 snapshot_dates += 1
-                write_team_snapshot_table(stats_connection, date, states, team_names)
+                write_team_snapshot_table(
+                    stats_connection,
+                    date,
+                    states,
+                    team_names,
+                    market_states=market_states if rating_features == "market" else None,
+                    skill_states=skill_states if skill_features == "score-based" else None,
+                )
                 for game in [candidate for candidate in season_games if candidate.date == date and candidate.is_final]:
                     home_stats = snapshot_for_team(states[game.home_team], game.home_team, date)
                     away_stats = snapshot_for_team(states[game.away_team], game.away_team, date)
@@ -620,6 +702,10 @@ def build_training_and_snapshots(
                         },
                     )
                     row["Date"] = game.date
+                    if rating_features == "market":
+                        row.update(market_rating_features(market_states, game.home_team, game.away_team))
+                    if skill_features == "score-based":
+                        row.update(score_skill_features(skill_states, game.home_team, game.away_team))
                     add_enriched_game_features(
                         row,
                         game,
@@ -631,6 +717,24 @@ def build_training_and_snapshots(
                     )
                     training_rows.append(row)
                     apply_game_result(states, game)
+                    if rating_features == "market":
+                        update_market_ratings(
+                            market_states,
+                            game.home_team,
+                            game.away_team,
+                            float(game.home_score or 0) - float(game.away_score or 0),
+                            float(game.home_score or 0) + float(game.away_score or 0),
+                            market_line_value(market_line, rating_line_source, "spread"),
+                            market_line_value(market_line, rating_line_source, "total"),
+                        )
+                    if skill_features == "score-based":
+                        update_score_skills(
+                            skill_states,
+                            game.home_team,
+                            game.away_team,
+                            float(game.home_score or 0),
+                            float(game.away_score or 0),
+                        )
         write_sqlite_rows(dataset_connection, TRAINING_TABLE, training_rows)
 
     return training_rows, snapshot_dates
@@ -733,9 +837,29 @@ def write_team_snapshot_table(
     date: str,
     states: dict[str, TeamState],
     team_names: list[str],
+    market_states: dict[str, MarketRatingState] | None = None,
+    skill_states: dict[str, ScoreSkillState] | None = None,
 ) -> None:
-    rows = [snapshot_for_team(states[team_name], team_name, date) for team_name in team_names]
+    rows = [
+        team_snapshot_row(states, team_name, date, market_states=market_states, skill_states=skill_states)
+        for team_name in team_names
+    ]
     write_sqlite_rows(connection, date, rows)
+
+
+def team_snapshot_row(
+    states: dict[str, TeamState],
+    team_name: str,
+    date: str,
+    market_states: dict[str, MarketRatingState] | None = None,
+    skill_states: dict[str, ScoreSkillState] | None = None,
+) -> dict[str, Any]:
+    row = snapshot_for_team(states[team_name], team_name, date)
+    if market_states is not None:
+        row.update(market_rating_snapshot_features(market_states, team_name))
+    if skill_states is not None:
+        row.update(score_skill_snapshot_features(skill_states, team_name))
+    return row
 
 
 def write_sqlite_rows(connection: sqlite3.Connection, table: str, rows: list[dict[str, Any]]) -> None:
@@ -914,6 +1038,213 @@ def chronological_linear_residuals(
             prediction = sum(weight * value for weight, value in zip(coefficients, features))
             residuals.append(prediction - float(row[target_column]))
     return residuals
+
+
+def build_validation_reports(
+    rows: list[dict[str, Any]],
+    feature_columns: list[str],
+    models: dict[str, dict[str, Any]],
+    target_modes: dict[str, str],
+    validation_splits: int,
+    calibration: str,
+    quantiles: list[float],
+    experimental_market_decorrelation: bool,
+) -> dict[str, Any]:
+    predictions = {
+        model_key: chronological_linear_prediction_rows(
+            rows,
+            feature_columns,
+            target_column_for(model_key, target_modes[model_key]),
+            target_modes[model_key],
+            validation_splits,
+            model_key,
+        )
+        for model_key in ("total_score", "home_margin")
+    }
+    report: dict[str, Any] = {
+        "baseline": {
+            model_key: {
+                "target_mode": target_modes[model_key],
+                "validation_rmse": models[model_key]["metrics"].get("validation_rmse"),
+                "validation_mae": models[model_key]["metrics"].get("validation_mae"),
+                "residual_stddev": models[model_key]["metrics"].get("residual_stddev"),
+                "interval_coverage": models[model_key]["metrics"].get("uncertainty", {}).get("coverage", {}),
+            }
+            for model_key in ("total_score", "home_margin")
+        },
+    }
+
+    report["calibration"] = calibration_report(predictions, calibration)
+    report["quantile_models"] = quantile_report(predictions, quantiles)
+    report["ablations"] = {
+        "rating_features": "enabled" if any(column in feature_columns for column in MARKET_RATING_COLUMNS) else "disabled",
+        "skill_features": "enabled" if any(column in feature_columns for column in SKILL_FEATURE_COLUMNS) else "disabled",
+    }
+    if experimental_market_decorrelation:
+        report["market_decorrelation"] = market_decorrelation_report(signal_rows(predictions))
+    return report
+
+
+def chronological_linear_prediction_rows(
+    rows: list[dict[str, Any]],
+    feature_columns: list[str],
+    target_column: str,
+    target_mode: str,
+    validation_splits: int,
+    model_key: str,
+) -> list[dict[str, Any]]:
+    training_rows = [row for row in rows if is_finite(row.get(target_column))]
+    defaults = build_feature_defaults(training_rows, feature_columns)
+    predictions: list[dict[str, Any]] = []
+    prior_validation_residuals: list[float] = []
+    for fold_id, (train_indexes, test_indexes) in enumerate(chronological_splits(len(training_rows), validation_splits)):
+        train_rows = [training_rows[index] for index in train_indexes]
+        test_rows = [training_rows[index] for index in test_indexes]
+        x_train = [[1.0, *[feature_value(row, column, defaults) for column in feature_columns]] for row in train_rows]
+        y_train = [float(row[target_column]) for row in train_rows]
+        coefficients = solve_ridge_regression(x_train, y_train, ridge=1.0)
+        train_residuals = [
+            prediction_residual_for_row(row, feature_columns, defaults, coefficients, target_mode, model_key)
+            for row in train_rows
+        ]
+        calibration_residuals = prior_validation_residuals or train_residuals
+        residual_source = "prior_validation_residuals" if prior_validation_residuals else "training_window_in_sample_residuals"
+        fold_residuals: list[float] = []
+        for row in test_rows:
+            raw_prediction = predict_linear_coefficients(row, feature_columns, defaults, coefficients)
+            baseline = baseline_for_row(row, model_key) if target_mode == "market_residual" else 0.0
+            actual_prediction = raw_prediction + baseline
+            actual_target = float(row["Score"] if model_key == "total_score" else row["Home-Margin"])
+            residual = actual_prediction - actual_target
+            fold_residuals.append(residual)
+            predictions.append(
+                {
+                    "fold_id": fold_id,
+                    "train_rows": len(train_rows),
+                    "test_rows": len(test_rows),
+                    "calibration_residuals": list(calibration_residuals),
+                    "calibration_residual_source": residual_source,
+                    "row": row,
+                    "prediction": actual_prediction,
+                    "target": actual_target,
+                    "residual": residual,
+                    "raw_prediction": raw_prediction,
+                }
+            )
+        prior_validation_residuals.extend(fold_residuals)
+    return predictions
+
+
+def prediction_residual_for_row(
+    row: dict[str, Any],
+    feature_columns: list[str],
+    defaults: dict[str, float],
+    coefficients: list[float],
+    target_mode: str,
+    model_key: str,
+) -> float:
+    raw_prediction = predict_linear_coefficients(row, feature_columns, defaults, coefficients)
+    baseline = baseline_for_row(row, model_key) if target_mode == "market_residual" else 0.0
+    actual_prediction = raw_prediction + baseline
+    actual_target = float(row["Score"] if model_key == "total_score" else row["Home-Margin"])
+    return actual_prediction - actual_target
+
+
+def predict_linear_coefficients(
+    row: dict[str, Any],
+    feature_columns: list[str],
+    defaults: dict[str, float],
+    coefficients: list[float],
+) -> float:
+    features = [1.0, *[feature_value(row, column, defaults) for column in feature_columns]]
+    return sum(weight * value for weight, value in zip(coefficients, features))
+
+
+def baseline_for_row(row: dict[str, Any], model_key: str) -> float:
+    key = "MARKET_TOTAL_CLOSE" if model_key == "total_score" else "MARKET_SPREAD_CLOSE"
+    return float(row.get(key) or 0.0)
+
+
+def calibration_report(predictions: dict[str, list[dict[str, Any]]], calibration: str) -> dict[str, Any]:
+    return {
+        "totals": calibration_section(
+            predictions["total_score"],
+            market_column="MARKET_TOTAL_CLOSE",
+            outcome_column="Score",
+            requested=calibration,
+        ),
+        "spreads": calibration_section(
+            predictions["home_margin"],
+            market_column="MARKET_SPREAD_CLOSE",
+            outcome_column="Home-Margin",
+            requested=calibration,
+        ),
+    }
+
+
+def calibration_section(
+    predictions: list[dict[str, Any]],
+    market_column: str,
+    outcome_column: str,
+    requested: str,
+) -> dict[str, Any]:
+    events: list[CalibrationEvent] = []
+    residual_sources: dict[str, int] = {}
+    for item in predictions:
+        row = item["row"]
+        if not is_finite(row.get(market_column)):
+            continue
+        residuals = [float(value) for value in item.get("calibration_residuals", []) if is_finite(value)]
+        if not residuals:
+            continue
+        edge = float(item["prediction"]) - float(row[market_column])
+        outcome = 1 if float(row[outcome_column]) > float(row[market_column]) else 0
+        events.append(CalibrationEvent(edge=edge, outcome=outcome, probability=empirical_probability(edge, residuals)))
+        source = str(item.get("calibration_residual_source") or "unknown")
+        residual_sources[source] = residual_sources.get(source, 0) + 1
+    config = fit_probability_calibrator(events, requested)
+    config["residual_source"] = residual_sources
+    return config
+
+
+def quantile_report(predictions: dict[str, list[dict[str, Any]]], quantiles: list[float]) -> dict[str, Any]:
+    if not quantiles:
+        return {}
+    return {
+        model_key: quantile_summary(
+            [item["residual"] for item in items],
+            [item["prediction"] for item in items],
+            [item["target"] for item in items],
+            quantiles,
+        )
+        for model_key, items in predictions.items()
+    }
+
+
+def signal_rows(predictions: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    by_date: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in predictions["total_score"]:
+        row = item["row"]
+        key = signal_key(row)
+        signal = by_date.setdefault(key, {"date": row.get("Date"), "home_team": row.get("TEAM_NAME"), "away_team": row.get("TEAM_NAME.1")})
+        if is_finite(row.get("MARKET_TOTAL_CLOSE")):
+            signal["market_total"] = float(row["MARKET_TOTAL_CLOSE"])
+            signal["total_edge"] = item["prediction"] - float(row["MARKET_TOTAL_CLOSE"])
+        if is_finite(row.get("MARKET_TOTAL_MOVE")):
+            signal["total_line_move"] = float(row["MARKET_TOTAL_MOVE"])
+    for item in predictions["home_margin"]:
+        row = item["row"]
+        signal = by_date.setdefault(signal_key(row), {"date": row.get("Date"), "home_team": row.get("TEAM_NAME"), "away_team": row.get("TEAM_NAME.1")})
+        if is_finite(row.get("MARKET_SPREAD_CLOSE")):
+            signal["market_spread"] = float(row["MARKET_SPREAD_CLOSE"])
+            signal["margin_edge"] = item["prediction"] - float(row["MARKET_SPREAD_CLOSE"])
+        if is_finite(row.get("MARKET_SPREAD_MOVE")):
+            signal["spread_line_move"] = float(row["MARKET_SPREAD_MOVE"])
+    return list(by_date.values())
+
+
+def signal_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(row.get("Date")), str(row.get("TEAM_NAME")), str(row.get("TEAM_NAME.1")))
 
 
 def feature_value(row: dict[str, Any], column: str, defaults: dict[str, float]) -> float:

@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
@@ -15,6 +16,12 @@ from nba_historical_projection.artifacts import (
     STATE_MANIFEST_NAME,
     build_artifact_inventory,
     validate_manifest,
+)
+from nba_historical_projection.calibration import (
+    CalibrationEvent,
+    empirical_probability,
+    fit_probability_calibrator,
+    reliability_bins,
 )
 from nba_historical_projection.cli import main as cli_main
 from nba_historical_projection.dataset import build_game_record
@@ -27,6 +34,7 @@ from nba_historical_projection.providers.sportsdb import (
 )
 from nba_historical_projection.sportsdb_import import (
     TRAINING_TABLE,
+    MarketLine,
     SportsDbGame,
     build_training_and_snapshots,
     import_sportsdb_artifacts,
@@ -42,6 +50,8 @@ from nba_historical_projection.training import (
     finite_target_arrays,
     split_index_for_rows,
 )
+from nba_historical_projection.quantiles import quantile_summary, sort_crossing_quantiles
+from nba_historical_projection.sportsdb_import import chronological_linear_prediction_rows
 
 
 class HistoricalProjectionTests(unittest.TestCase):
@@ -294,6 +304,149 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(result["projected_home_margin"], 3.5)
             self.assertEqual(result["artifact"]["models"]["total_score"]["target_mode"], "market_residual")
 
+    def test_prediction_adds_optional_probabilities_and_quantiles(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "models").mkdir()
+            self.write_json(root / "models" / "total.json", {"intercept": 220, "coefficients": [0, 0]})
+            self.write_json(root / "models" / "margin.json", {"intercept": 4, "coefficients": [0, 0]})
+            self.write_json(
+                root / "manifest.json",
+                {
+                    "feature_columns": ["MARKET_TOTAL_CLOSE", "MARKET_SPREAD_CLOSE"],
+                    "feature_defaults": {"MARKET_TOTAL_CLOSE": 218, "MARKET_SPREAD_CLOSE": 2},
+                    "models": {
+                        "total_score": {
+                            "type": "linear_json",
+                            "path": "models/total.json",
+                            "residual_stddev": 10,
+                        },
+                        "home_margin": {
+                            "type": "linear_json",
+                            "path": "models/margin.json",
+                            "residual_stddev": 5,
+                        },
+                    },
+                    "calibration": {
+                        "totals": {"method": "empirical"},
+                        "spreads": {"method": "empirical"},
+                    },
+                    "quantile_models": {
+                        "total_score": {
+                            "method": "empirical_residual",
+                            "quantiles": {"0.10": -8, "0.50": 0, "0.90": 8},
+                        },
+                        "home_margin": {
+                            "method": "empirical_residual",
+                            "quantiles": {"0.10": -5, "0.50": 0, "0.90": 5},
+                        },
+                    },
+                },
+            )
+
+            result = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-04-25",
+                    "market_total": 218,
+                    "market_spread": 2,
+                },
+            )
+
+            self.assertIn("prob_over_market_total", result["probabilities"])
+            self.assertGreaterEqual(result["probabilities"]["prob_over_market_total"], 0)
+            self.assertLessEqual(result["probabilities"]["prob_over_market_total"], 1)
+            self.assertEqual(result["projected_total_quantiles"], {"0.10": 212.0, "0.50": 220.0, "0.90": 228.0})
+            self.assertEqual(result["median_home_margin"], 4.0)
+
+    def test_calibration_bins_are_reproducible_and_probabilities_monotonic(self):
+        residuals = [-4, -2, 0, 2, 4]
+        low = empirical_probability(-3, residuals)
+        high = empirical_probability(3, residuals)
+        self.assertLess(low, high)
+
+        events = [
+            CalibrationEvent(edge=-2, probability=0.2, outcome=0),
+            CalibrationEvent(edge=-1, probability=0.4, outcome=0),
+            CalibrationEvent(edge=1, probability=0.6, outcome=1),
+            CalibrationEvent(edge=2, probability=0.8, outcome=1),
+        ]
+        calibrator = fit_probability_calibrator(events, "empirical")
+        self.assertEqual(calibrator["method"], "empirical")
+        self.assertEqual(reliability_bins([0.2, 0.4, 0.6, 0.8], [0, 0, 1, 1]), calibrator["reliability_bins"])
+
+    def test_quantile_crossing_is_corrected(self):
+        self.assertEqual(
+            sort_crossing_quantiles({"0.10": 9, "0.50": 3, "0.90": 6}),
+            {"0.10": 3, "0.50": 6, "0.90": 9},
+        )
+
+    def test_quantile_pinball_uses_inverse_residual_quantile(self):
+        summary = quantile_summary(
+            residuals=[-10.0, 0.0, 30.0],
+            predictions=[100.0],
+            targets=[80.0],
+            quantiles=[0.10, 0.50, 0.90],
+        )
+
+        self.assertEqual(summary["quantiles"], {"0.10": -10.0, "0.50": 0.0, "0.90": 30.0})
+        self.assertEqual(summary["pinball_loss"]["0.10"], 1.0)
+        self.assertEqual(summary["pinball_loss"]["0.90"], 3.0)
+
+    def test_train_cli_does_not_expose_unsupported_rating_or_skill_flags(self):
+        with redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit):
+                cli_main([
+                    "train",
+                    "--dataset",
+                    "missing.sqlite",
+                    "--table",
+                    "games",
+                    "--artifact-dir",
+                    "out",
+                    "--rating-features",
+                    "market",
+                ])
+            with self.assertRaises(SystemExit):
+                cli_main([
+                    "train",
+                    "--dataset",
+                    "missing.sqlite",
+                    "--table",
+                    "games",
+                    "--artifact-dir",
+                    "out",
+                    "--skill-features",
+                    "score-based",
+                ])
+
+    def test_calibration_residuals_exclude_current_validation_fold(self):
+        rows = [
+            {"Date": "2025-10-21", "TEAM_NAME": "A", "TEAM_NAME.1": "B", "POWER": 1.0, "Score": 100.0, "Home-Margin": 1.0},
+            {"Date": "2025-10-22", "TEAM_NAME": "C", "TEAM_NAME.1": "D", "POWER": 2.0, "Score": 104.0, "Home-Margin": 2.0},
+            {"Date": "2025-10-23", "TEAM_NAME": "E", "TEAM_NAME.1": "F", "POWER": 3.0, "Score": 120.0, "Home-Margin": 3.0},
+            {"Date": "2025-10-24", "TEAM_NAME": "G", "TEAM_NAME.1": "H", "POWER": 4.0, "Score": 140.0, "Home-Margin": 4.0},
+        ]
+
+        predictions = chronological_linear_prediction_rows(
+            rows,
+            ["POWER"],
+            "Score",
+            "direct",
+            validation_splits=2,
+            model_key="total_score",
+        )
+
+        self.assertEqual(len(predictions), 2)
+        self.assertEqual(predictions[0]["fold_id"], 0)
+        self.assertEqual(predictions[0]["calibration_residual_source"], "training_window_in_sample_residuals")
+        self.assertEqual(predictions[1]["fold_id"], 1)
+        self.assertEqual(predictions[1]["calibration_residual_source"], "prior_validation_residuals")
+        self.assertEqual(len(predictions[1]["calibration_residuals"]), 1)
+        self.assertEqual(predictions[1]["calibration_residuals"], [predictions[0]["residual"]])
+
     def test_validate_manifest_rejects_malformed_uncertainty_interval(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -515,6 +668,145 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(row["Total-Market-Residual"], 1.0)
             self.assertEqual(row["HOME_UNAVAILABLE_MINUTES"], 24.0)
 
+    def test_sportsdb_import_can_emit_enhanced_validation_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            market_path = root / "market_lines.csv"
+            market_path.write_text(
+                "game_date,home_team,away_team,closing_total,closing_spread,opening_total,opening_spread\n"
+                "2025-10-21,Boston Celtics,New York Knicks,220,6,218,5\n"
+                "2025-10-22,Brooklyn Nets,Boston Celtics,205,-7,204,-6\n"
+                "2025-10-24,New York Knicks,Brooklyn Nets,211,7,210,6\n"
+                "2025-10-26,Boston Celtics,Brooklyn Nets,214,8,213,7\n",
+                encoding="utf-8",
+            )
+
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                market_lines_csv=market_path,
+                model_kind="auto",
+                validation_splits=2,
+                quantiles="0.10,0.50,0.90",
+                rating_features="market",
+                skill_features="score-based",
+                experimental_market_decorrelation=True,
+            )
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(result["validation"]["ok"])
+            self.assertTrue(manifest["rating_features"]["enabled"])
+            self.assertTrue(manifest["skill_features"]["enabled"])
+            self.assertIn("HOME_MARKET_RATING", manifest["feature_columns"])
+            self.assertIn("HOME_OFF_SKILL_MEAN", manifest["feature_columns"])
+            self.assertIn("calibration", manifest["validation_reports"])
+            self.assertIn("quantile_models", manifest["validation_reports"])
+            self.assertIn("market_decorrelation", manifest["validation_reports"])
+            self.assertIn("0.50", manifest["quantile_models"]["total_score"]["quantiles"])
+
+            evaluation = self.capture_cli_json([
+                "evaluate",
+                "--artifact-dir",
+                str(root),
+            ])
+            self.assertIn("validation_reports", evaluation)
+            self.assertIn("quantile_models", evaluation)
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "Brooklyn Nets",
+                    "game_date": "2025-10-26",
+                    "include_debug": True,
+                },
+            )
+            debug_features = projection["debug"]["feature_values"]
+            defaults = manifest["feature_defaults"]
+            self.assertNotEqual(debug_features["HOME_OFF_SKILL_MEAN"], defaults["HOME_OFF_SKILL_MEAN"])
+            with sqlite3.connect(root / "sportsdb" / "normalized" / "nba_team_stats.sqlite") as connection:
+                connection.row_factory = sqlite3.Row
+                home = connection.execute(
+                    'SELECT * FROM "2025-10-26" WHERE "TEAM_NAME" = ?',
+                    ("Boston Celtics",),
+                ).fetchone()
+                away = connection.execute(
+                    'SELECT * FROM "2025-10-26" WHERE "TEAM_NAME" = ?',
+                    ("Brooklyn Nets",),
+                ).fetchone()
+            self.assertAlmostEqual(debug_features["HOME_OFF_SKILL_MEAN"], home["OFF_SKILL_MEAN"])
+            self.assertAlmostEqual(debug_features["AWAY_DEF_SKILL_MEAN"], away["DEF_SKILL_MEAN"])
+            expected_skill_margin = ((home["OFF_SKILL_MEAN"] + away["DEF_SKILL_MEAN"]) / 2.0) - (
+                (away["OFF_SKILL_MEAN"] + home["DEF_SKILL_MEAN"]) / 2.0
+            )
+            self.assertAlmostEqual(debug_features["SKILL_MARGIN_PRIOR"], expected_skill_margin)
+
+    def test_market_rating_and_score_skill_features_use_prior_games_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_path = root / "games.sqlite"
+            team_stats_path = root / "team_stats.sqlite"
+            games = [
+                SportsDbGame("1", "2025-2026", "2025-10-21", "Boston Celtics", "New York Knicks", 120, 100),
+                SportsDbGame("2", "2025-2026", "2025-10-22", "Boston Celtics", "New York Knicks", 90, 110),
+            ]
+            market_lines = {
+                matchup_key: line
+                for matchup_key, line in [
+                    (
+                        ("2025-10-21", "boston celtics", "new york knicks"),
+                        MarketLine("2025-10-21", "Boston Celtics", "New York Knicks", closing_total=220, closing_spread=4),
+                    ),
+                    (
+                        ("2025-10-22", "boston celtics", "new york knicks"),
+                        MarketLine("2025-10-22", "Boston Celtics", "New York Knicks", closing_total=210, closing_spread=3),
+                    ),
+                ]
+            }
+
+            build_training_and_snapshots(
+                games,
+                ["Boston Celtics", "New York Knicks"],
+                dataset_path,
+                team_stats_path,
+                market_lines=market_lines,
+                rating_features="market",
+                skill_features="score-based",
+            )
+
+            with sqlite3.connect(dataset_path) as connection:
+                connection.row_factory = sqlite3.Row
+                first = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2025-10-21",),
+                ).fetchone()
+                second = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2025-10-22",),
+                ).fetchone()
+
+            self.assertEqual(first["HOME_MARKET_RATING"], 0.0)
+            self.assertEqual(first["HOME_OFF_SKILL_MEAN"], 110.0)
+            self.assertNotEqual(second["HOME_MARKET_RATING"], 0.0)
+            self.assertNotEqual(second["HOME_OFF_SKILL_MEAN"], 110.0)
+
+            with sqlite3.connect(team_stats_path) as connection:
+                connection.row_factory = sqlite3.Row
+                first_snapshot = connection.execute(
+                    'SELECT * FROM "2025-10-21" WHERE "TEAM_NAME" = ?',
+                    ("Boston Celtics",),
+                ).fetchone()
+                second_snapshot = connection.execute(
+                    'SELECT * FROM "2025-10-22" WHERE "TEAM_NAME" = ?',
+                    ("Boston Celtics",),
+                ).fetchone()
+
+            self.assertEqual(first_snapshot["MARKET_RATING"], 0.0)
+            self.assertEqual(first_snapshot["OFF_SKILL_MEAN"], 110.0)
+            self.assertNotEqual(second_snapshot["MARKET_RATING"], 0.0)
+            self.assertNotEqual(second_snapshot["OFF_SKILL_MEAN"], 110.0)
+
     def test_sportsdb_import_default_uses_recent_seasons_when_provider_lists_old_samples(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -647,6 +939,13 @@ class HistoricalProjectionTests(unittest.TestCase):
     def write_json(self, path: Path, value):
         with path.open("w", encoding="utf-8") as handle:
             json.dump(value, handle)
+
+    def capture_cli_json(self, args):
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = cli_main(args)
+        self.assertEqual(exit_code, 0)
+        return json.loads(output.getvalue())
 
 
 class FakeSportsDbClient:

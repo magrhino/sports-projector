@@ -114,6 +114,37 @@ def resolve_feature_value(
     }:
         return numeric_or_none(defaults.get(column))
 
+    if column == "HOME_MARKET_RATING":
+        return snapshot_or_default(home_stats, "MARKET_RATING", defaults, column)
+    if column == "AWAY_MARKET_RATING":
+        return snapshot_or_default(away_stats, "MARKET_RATING", defaults, column)
+    if column == "MARKET_RATING_DIFF":
+        home_rating = snapshot_number(home_stats, "MARKET_RATING")
+        away_rating = snapshot_number(away_stats, "MARKET_RATING")
+        if home_rating is None or away_rating is None:
+            return numeric_or_none(defaults.get(column))
+        return home_rating - away_rating
+    if column == "HOME_MARKET_RATING_PREV_N_AVG":
+        return snapshot_or_default(home_stats, "MARKET_RATING_PREV_N_AVG", defaults, column)
+    if column == "AWAY_MARKET_RATING_PREV_N_AVG":
+        return snapshot_or_default(away_stats, "MARKET_RATING_PREV_N_AVG", defaults, column)
+    if column == "MARKET_TOTAL_TEAM_ENVIRONMENT_PRIOR":
+        home_total = snapshot_number(home_stats, "MARKET_TOTAL_ENVIRONMENT_PRIOR")
+        away_total = snapshot_number(away_stats, "MARKET_TOTAL_ENVIRONMENT_PRIOR")
+        if home_total is None or away_total is None:
+            return numeric_or_none(defaults.get(column))
+        return (home_total + away_total) / 2.0
+    if column == "MARKET_SPREAD_PRIOR_RESIDUAL_FORM":
+        home_form = snapshot_number(home_stats, "MARKET_SPREAD_RESIDUAL_FORM")
+        away_form = snapshot_number(away_stats, "MARKET_SPREAD_RESIDUAL_FORM")
+        if home_form is None or away_form is None:
+            return numeric_or_none(defaults.get(column))
+        return home_form - away_form
+
+    skill_value = resolve_skill_feature(column, home_stats, away_stats, defaults)
+    if skill_value is not None:
+        return skill_value
+
     if column.endswith(".1"):
         value = away_stats.get(column[:-2], away_stats.get(column))
     else:
@@ -121,6 +152,53 @@ def resolve_feature_value(
     if value is None:
         value = defaults.get(column)
     return numeric_or_none(value)
+
+
+def snapshot_or_default(
+    stats: dict[str, Any],
+    snapshot_column: str,
+    defaults: dict[str, Any],
+    feature_column: str,
+) -> float | None:
+    return numeric_or_none(stats.get(snapshot_column, defaults.get(feature_column)))
+
+
+def snapshot_number(stats: dict[str, Any], snapshot_column: str) -> float | None:
+    return numeric_or_none(stats.get(snapshot_column))
+
+
+def resolve_skill_feature(
+    column: str,
+    home_stats: dict[str, Any],
+    away_stats: dict[str, Any],
+    defaults: dict[str, Any],
+) -> float | None:
+    mappings = {
+        "HOME_OFF_SKILL_MEAN": (home_stats, "OFF_SKILL_MEAN"),
+        "HOME_OFF_SKILL_STD": (home_stats, "OFF_SKILL_STD"),
+        "HOME_DEF_SKILL_MEAN": (home_stats, "DEF_SKILL_MEAN"),
+        "HOME_DEF_SKILL_STD": (home_stats, "DEF_SKILL_STD"),
+        "AWAY_OFF_SKILL_MEAN": (away_stats, "OFF_SKILL_MEAN"),
+        "AWAY_OFF_SKILL_STD": (away_stats, "OFF_SKILL_STD"),
+        "AWAY_DEF_SKILL_MEAN": (away_stats, "DEF_SKILL_MEAN"),
+        "AWAY_DEF_SKILL_STD": (away_stats, "DEF_SKILL_STD"),
+    }
+    if column in mappings:
+        stats, snapshot_column = mappings[column]
+        return snapshot_or_default(stats, snapshot_column, defaults, column)
+    if column == "SKILL_MARGIN_PRIOR" or column == "SKILL_TOTAL_PRIOR":
+        home_off = snapshot_number(home_stats, "OFF_SKILL_MEAN")
+        home_def = snapshot_number(home_stats, "DEF_SKILL_MEAN")
+        away_off = snapshot_number(away_stats, "OFF_SKILL_MEAN")
+        away_def = snapshot_number(away_stats, "DEF_SKILL_MEAN")
+        if home_off is None or home_def is None or away_off is None or away_def is None:
+            return numeric_or_none(defaults.get(column))
+        home_expected = (home_off + away_def) / 2.0
+        away_expected = (away_off + home_def) / 2.0
+        if column == "SKILL_MARGIN_PRIOR":
+            return home_expected - away_expected
+        return home_expected + away_expected
+    return None
 
 
 def numeric_or_none(value: Any) -> float | None:

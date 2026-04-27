@@ -226,6 +226,29 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
 
 `market_lines.csv` should include `game_date` or `date`, `home_team`, `away_team`, and any of `closing_total`, `closing_spread`, `opening_total`, or `opening_spread`. `availability.csv` should include `date`, `team`, and optional `unavailable_minutes` / `unavailable_value` aggregates. When closing market lines are present, training can select market-residual models and stores rolling-origin validation metrics plus calibrated 68/80/90 percent residual intervals in `manifest.json`.
 
+Enhanced historical research artifacts are optional and additive. They keep the existing score and margin projection fields, then add calibration, quantile, market-rating, score-skill, and market-diagnostics sections when enabled:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --market-lines-csv market_lines.csv \
+  --model-kind auto \
+  --calibration auto \
+  --quantiles 0.05,0.10,0.25,0.50,0.75,0.90,0.95 \
+  --rating-features market \
+  --rating-line-source close \
+  --skill-features score-based \
+  --experimental-market-decorrelation
+```
+
+Calibration uses rolling-origin out-of-fold predictions to report Brier score, log-loss, expected calibration error, and reliability bins for totals and spreads. Prediction output includes bounded probabilities such as over/under market total, home/away cover, and home win when enough artifact metadata or residual uncertainty is available.
+
+Quantile artifacts use empirical rolling-origin residual quantiles by default, so they do not require extra Python dependencies. Prediction output can include ordered total and home-margin quantiles plus median fields. Treat the intervals and probabilities as uncertainty summaries, not guaranteed outcomes or betting advice.
+
+Market-rating features derive prior team-strength signals from available opening or closing market lines. Score-skill features derive prior offensive and defensive strength from completed scores. Both are computed online before each training row is emitted, then updated only after the game result is consumed.
+
+Use `evaluate` to compare before/after runs from the same rolling-origin split. Trust calibration metrics, interval coverage, and pinball loss alongside RMSE/MAE; market-decorrelation and closing-line-value diagnostics are experimental and are not default selection criteria.
+
 Training historical XGBoost regressors from a prepared SQLite dataset requires Python packages from the adapted historical stack, including `pandas`, `numpy`, and `xgboost`:
 
 ```bash
@@ -240,9 +263,17 @@ PYTHONPATH=python python3 -m nba_historical_projection train \
   --validation-splits 3
 ```
 
-The training dataset must include numeric `Score` and `Home-Margin` targets. Feature snapshots should contain only information available before game start.
+The training dataset must include numeric `Score` and `Home-Margin` targets. Market-residual training, calibration, and market comparisons require market total/spread columns such as `MARKET_TOTAL_CLOSE`, `MARKET_SPREAD_CLOSE`, opening lines, and line moves. Feature snapshots should contain only information available before game start. Closing lines are appropriate only for a closing-line pregame prediction scenario; otherwise use opening lines or caller-provided market inputs.
 
 Training writes `manifest.json` with numeric median feature defaults, refreshes `artifact_manifest.json`, and appends a `train` event to `artifact_import_log.jsonl`.
+
+Research-paper mapping:
+
+- Walsh/Joshi: calibration-first reliability metrics and probability outputs.
+- Hubacek/Sir: explicit, opt-in market-decorrelation/value-signal diagnostics.
+- Dmochowski: quantile summaries and uncertainty-aware edge status.
+- Wunderlich/Memmert: market-implied team rating features from prior odds/lines.
+- Guo/Sanner/Graepel/Buntine: online score-based offensive and defensive skill features.
 
 ## Data Sources and Safety
 

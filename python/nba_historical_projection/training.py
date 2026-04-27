@@ -64,6 +64,12 @@ def train_xgboost_regressors(
     model_kind: str = "direct",
     early_stopping_rounds: int = 25,
     validation_splits: int = 3,
+    calibration: str = "auto",
+    quantiles: str | None = None,
+    rating_features: str = "none",
+    rating_line_source: str = "close",
+    skill_features: str = "none",
+    experimental_market_decorrelation: bool = False,
 ) -> dict[str, Any]:
     try:
         import numpy as np
@@ -83,6 +89,12 @@ def train_xgboost_regressors(
         raise RuntimeError(f"Dataset table is empty: {table}")
     if model_kind not in MODEL_KINDS:
         raise RuntimeError(f"model_kind must be one of: {', '.join(sorted(MODEL_KINDS))}")
+    if calibration not in {"none", "empirical", "isotonic", "platt", "auto"}:
+        raise RuntimeError("calibration must be none, empirical, isotonic, platt, or auto")
+    if rating_features != "none" or skill_features != "none":
+        raise RuntimeError("rating and skill feature generation is supported by import-sportsdb artifacts")
+    if rating_line_source not in {"open", "close", "provided"}:
+        raise RuntimeError("rating-line-source must be open, close, or provided")
     frame_columns = set(frame.columns)
     required_targets = {
         target_column_for(model_key, mode)
@@ -148,6 +160,11 @@ def train_xgboost_regressors(
         "seasons": seasons,
         "feature_columns": feature_columns,
         "feature_defaults": feature_defaults,
+        "feature_generators": {
+            "rating_features": rating_features,
+            "rating_line_source": rating_line_source,
+            "skill_features": skill_features,
+        },
         "models": {
             "total_score": {
                 "type": "xgboost_json",
@@ -160,6 +177,22 @@ def train_xgboost_regressors(
                 "path": "models/home_margin.json",
                 "target_mode": margin_mode,
                 **margin_metrics,
+            },
+        },
+        "calibration": {},
+        "quantile_models": {},
+        "rating_features": {"enabled": False, "columns": [], "line_source": rating_line_source},
+        "skill_features": {"enabled": False, "columns": []},
+        "validation_reports": {
+            "baseline": {
+                "total_score": total_metrics.get("validation", {}),
+                "home_margin": margin_metrics.get("validation", {}),
+            },
+            "calibration": {"requested": calibration, "status": "not_generated_for_xgboost_train"},
+            "quantile_models": {"requested": quantiles, "status": "not_generated_for_xgboost_train"},
+            "market_decorrelation": {
+                "enabled": experimental_market_decorrelation,
+                "status": "not_generated_for_xgboost_train",
             },
         },
     }
