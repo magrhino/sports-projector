@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_as:
+        description: "Optional one-time release version override, such as 1.0.0"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  validate:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run TypeScript tests
+        run: npm test
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Python tests
+        run: PYTHONPATH=python python3 -m unittest discover -s python/tests
+
+      - name: Build Docker image
+        run: docker build -t sports-projector:release-check .
+
+  release:
+    name: Create release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release_outputs.outputs.release_created }}
+      tag_name: ${{ steps.release_outputs.outputs.tag_name }}
+      version: ${{ steps.release_outputs.outputs.version }}
+      major: ${{ steps.release_outputs.outputs.major }}
+      minor: ${{ steps.release_outputs.outputs.minor }}
+      sha: ${{ steps.release_outputs.outputs.sha }}
+
+    steps:
+      - name: Resolve release version override
+        id: release_version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          INPUT_RELEASE_AS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_as || '' }}
+        run: |
+          if [ -n "${INPUT_RELEASE_AS}" ]; then
+            echo "release_as=${INPUT_RELEASE_AS}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.0.0" >/dev/null 2>&1; then
+            echo "release_as=" >> "${GITHUB_OUTPUT}"
+          else
+            echo "release_as=1.0.0" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run release-please
+        id: release
+        if: ${{ steps.release_version.outputs.release_as == '' }}
+        uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062 # v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+
+      - name: Run release-please with version override
+        id: release_override
+        if: ${{ steps.release_version.outputs.release_as != '' }}
+        uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062 # v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+          release-as: ${{ steps.release_version.outputs.release_as }}
+
+      - name: Collect release outputs
+        id: release_outputs
+        if: ${{ steps.release.outputs.release_created == 'true' || steps.release_override.outputs.release_created == 'true' }}
+        env:
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          RELEASE_CREATED_OVERRIDE: ${{ steps.release_override.outputs.release_created }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+          TAG_NAME_OVERRIDE: ${{ steps.release_override.outputs.tag_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+          VERSION_OVERRIDE: ${{ steps.release_override.outputs.version }}
+          MAJOR: ${{ steps.release.outputs.major }}
+          MAJOR_OVERRIDE: ${{ steps.release_override.outputs.major }}
+          MINOR: ${{ steps.release.outputs.minor }}
+          MINOR_OVERRIDE: ${{ steps.release_override.outputs.minor }}
+          SHA: ${{ steps.release.outputs.sha }}
+          SHA_OVERRIDE: ${{ steps.release_override.outputs.sha }}
+        run: |
+          echo "release_created=${RELEASE_CREATED:-$RELEASE_CREATED_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          echo "tag_name=${TAG_NAME:-$TAG_NAME_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION:-$VERSION_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          echo "major=${MAJOR:-$MAJOR_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          echo "minor=${MINOR:-$MINOR_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${SHA:-$SHA_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+
+  image:
+    name: Publish Docker image
+    needs: release
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out released source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.release.outputs.tag_name }}
+            type=raw,value=${{ needs.release.outputs.version }}
+            type=raw,value=${{ needs.release.outputs.major }}.${{ needs.release.outputs.minor }}
+            type=raw,value=${{ needs.release.outputs.major }}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@92c65d2898f1f53cfdc910b962cecff86e7f8fcc # v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

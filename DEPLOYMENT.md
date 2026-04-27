@@ -19,7 +19,28 @@ docker run -d \
 
 The frontend and HTTP API are served from `http://localhost:8080`.
 
-The repository does not currently define a published container image or release tag policy. Pin your own pushed image tags for reproducible production deploys.
+Release images are published to GitHub Container Registry when a GitHub release is created:
+
+```bash
+docker pull ghcr.io/magrhino/sports-projector:v1.0.0
+docker run -d \
+  --name sports-projector \
+  -p 8080:8080 \
+  -e PORT=8080 \
+  ghcr.io/magrhino/sports-projector:v1.0.0
+```
+
+Use the exact `vX.Y.Z` release tag for reproducible production deploys. The image is also tagged with the bare SemVer version, major/minor, major, and `latest`.
+
+### Release automation
+
+Releases are managed by GitHub Actions and release-please from Conventional Commit messages on `main`. The release workflow validates the candidate with the Node build, TypeScript tests, Python tests, and a Docker build before it can create a GitHub release or publish an image.
+
+Configure the repository before enabling the workflow:
+
+- Add a `RELEASE_PLEASE_TOKEN` repository secret. Use a fine-grained PAT or equivalent token that can read and write repository contents, create releases and tags, and create or update pull requests.
+- In GitHub Actions settings, allow workflows to create pull requests so release-please can maintain the release PR.
+- The first release is bootstrapped as `v1.0.0` until that tag exists. After `v1.0.0`, release-please follows normal SemVer from Conventional Commit names.
 
 ### Container state
 
@@ -33,7 +54,7 @@ docker run -d \
   -e SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED=true \
   -e SPORTS_PROJECTOR_LIVE_DB_PATH=/data/live-tracking/nba-live.sqlite \
   -v /path/to/sports-projector-data:/data \
-  sports-projector:local
+  ghcr.io/magrhino/sports-projector:v1.0.0
 ```
 
 Historical projection from Docker requires a mounted artifact directory. The stock Dockerfile includes Python and the projection package, but generated historical artifacts remain operator-managed state and must be mounted separately.
