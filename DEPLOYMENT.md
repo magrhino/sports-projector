@@ -124,7 +124,25 @@ Build or validate artifacts from a source checkout:
 PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection inventory-artifacts --artifact-dir data/historical
+PYTHONPATH=python python3 -m nba_historical_projection evaluate --artifact-dir data/historical
 ```
+
+Optional calibrated historical artifacts are additive to the existing score and margin projections. When local market lines are available, enable calibrated probabilities, residual quantiles, market-derived team ratings, score-based team skills, and experimental market diagnostics during artifact refresh:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --market-lines-csv market_lines.csv \
+  --model-kind auto \
+  --calibration auto \
+  --quantiles 0.05,0.10,0.25,0.50,0.75,0.90,0.95 \
+  --rating-features market \
+  --rating-line-source close \
+  --skill-features score-based \
+  --experimental-market-decorrelation
+```
+
+The deployed prediction bridge automatically reads these sections from `manifest.json` when present. Requests that include `market_total` or `market_spread` can return calibrated over/under and cover probabilities, ordered total and margin quantiles, median fields, and market-comparison diagnostics. Treat these outputs as uncertainty summaries for research, not guaranteed outcomes or betting advice.
 
 Configure the Node service to use the artifact directory:
 
