@@ -296,10 +296,16 @@ function contentType(filePath: string): string {
       return "text/css; charset=utf-8";
     case ".html":
       return "text/html; charset=utf-8";
+    case ".ico":
+      return "image/x-icon";
     case ".js":
       return "text/javascript; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
+    case ".png":
+      return "image/png";
+    case ".webmanifest":
+      return "application/manifest+json; charset=utf-8";
     default:
       return "application/octet-stream";
   }

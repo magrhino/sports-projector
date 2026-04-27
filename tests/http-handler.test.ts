@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +26,30 @@ describe("createHttpHandler", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.body).toBe('{"error":"API route not found."}');
+  });
+
+  it("serves web app icon assets with specific content types", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-http-static-"));
+    try {
+      writeFileSync(path.join(dir, "favicon.ico"), "icon");
+      writeFileSync(path.join(dir, "favicon-32x32.png"), "png");
+      writeFileSync(path.join(dir, "site.webmanifest"), "{}");
+
+      const handler = createHttpHandler({ publicDir: dir });
+
+      const ico = await callHandler(handler, "/favicon.ico");
+      const png = await callHandler(handler, "/favicon-32x32.png");
+      const manifest = await callHandler(handler, "/site.webmanifest");
+
+      expect(ico.statusCode).toBe(200);
+      expect(ico.headers["content-type"]).toBe("image/x-icon");
+      expect(png.statusCode).toBe(200);
+      expect(png.headers["content-type"]).toBe("image/png");
+      expect(manifest.statusCode).toBe(200);
+      expect(manifest.headers["content-type"]).toBe("application/manifest+json; charset=utf-8");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns NBA live and historical projections for an ESPN event", async () => {
@@ -240,7 +264,7 @@ async function callHandler(
   handler: ReturnType<typeof createHttpHandler>,
   url: string,
   method = "GET"
-): Promise<ServerResponse & { body: string }> {
+): Promise<ResponseDouble> {
   const response = createResponseDouble();
   await handler(
     {
@@ -361,18 +385,25 @@ function seedLiveModel(store: LiveTrackingStore): void {
   store.trainLatestModel(1);
 }
 
-function createResponseDouble(): ServerResponse & { body: string } {
+type ResponseDouble = ServerResponse & {
+  body: string;
+  headers: Record<string, number | string | string[]>;
+};
+
+function createResponseDouble(): ResponseDouble {
   return {
     statusCode: 0,
+    headers: {},
     body: "",
-    setHeader() {
+    setHeader(name: string, value: number | string | string[]) {
+      this.headers[name.toLowerCase()] = value;
       return this;
     },
     end(body?: string | Buffer) {
       this.body = body === undefined ? "" : body.toString();
       return this;
     }
-  } as ServerResponse & { body: string };
+  } as ResponseDouble;
 }
 
 interface ProjectionResponse {
