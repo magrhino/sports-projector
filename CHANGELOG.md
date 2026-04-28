@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.2.0...sports-projector-v0.2.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **http:** protect live model training endpoint ([b1753be](https://github.com/magrhino/sports-projector/commit/b1753be0908012f90e691e90055ce6a4d01f524b))
+
 ## [0.2.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.1.0...sports-projector-v0.2.0) (2026-04-28)
 
 
