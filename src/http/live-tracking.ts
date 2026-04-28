@@ -1,16 +1,17 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { LiveNbaTracker } from "../nba/live-tracker.js";
+import { disabledAutoTrainingStatus, type LiveModelTrainingScheduler } from "../nba/live-training-scheduler.js";
 import type { LiveTrackingConfig, LiveTrackingStore } from "../nba/live-tracking-store.js";
+import { headerValue, isAuthorizedAdminRequest } from "./admin-auth.js";
 
 const LIVE_MODEL_TRAIN_ACTION = "train-live-model";
 const LIVE_MODEL_TRAIN_ACTION_HEADER = "x-sports-projector-action";
-const LIVE_MODEL_TRAIN_TOKEN_HEADER = "x-sports-projector-admin-token";
 
 export interface LiveTrackingHttpContext {
   config: LiveTrackingConfig;
   store: LiveTrackingStore;
   tracker: LiveNbaTracker | null;
+  trainer: LiveModelTrainingScheduler | null;
 }
 
 export function getLiveTrackingStatus(context: LiveTrackingHttpContext | null): { status: number; body: unknown } {
@@ -37,19 +38,25 @@ export function getLiveTrackingStatus(context: LiveTrackingHttpContext | null): 
           },
           latest_snapshot: null,
           model: null
-        }
+        },
+        auto_training: disabledAutoTrainingStatus()
       }
     };
   }
 
+  const body = context.tracker?.status() ?? {
+    running: false,
+    polling: false,
+    last_poll_at: null,
+    last_error: null,
+    tracker: context.store.status(context.config.enabled, context.config.minSnapshots)
+  };
+
   return {
     status: 200,
-    body: context.tracker?.status() ?? {
-      running: false,
-      polling: false,
-      last_poll_at: null,
-      last_error: null,
-      tracker: context.store.status(context.config.enabled, context.config.minSnapshots)
+    body: {
+      ...body,
+      auto_training: context.trainer?.status() ?? disabledAutoTrainingStatus()
     }
   };
 }
@@ -98,37 +105,5 @@ function isAuthorizedTrainRequest(request: IncomingMessage, adminToken: string |
     return false;
   }
 
-  if (isLoopbackAddress(request.socket.remoteAddress)) {
-    return true;
-  }
-
-  const expectedToken = normalizeToken(adminToken);
-  const providedToken = headerValue(request, LIVE_MODEL_TRAIN_TOKEN_HEADER);
-  return expectedToken !== null && providedToken !== undefined && safeTokenEqual(providedToken, expectedToken);
-}
-
-function headerValue(request: IncomingMessage, name: string): string | undefined {
-  const value = request.headers[name];
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-  return value;
-}
-
-function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) {
-    return false;
-  }
-  return address === "::1" || address === "127.0.0.1" || address === "::ffff:127.0.0.1" || /^127\./.test(address);
-}
-
-function normalizeToken(token: string | null | undefined): string | null {
-  const normalized = token?.trim();
-  return normalized ? normalized : null;
-}
-
-function safeTokenEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+  return isAuthorizedAdminRequest(request, adminToken);
 }

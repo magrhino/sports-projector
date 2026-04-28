@@ -4,6 +4,7 @@ import { EspnClient, normalizeGameSummary, type EspnNormalizedGame } from "../cl
 import { KalshiClient } from "../clients/kalshi.js";
 import type { CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
+import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
 import { EventIdSchema } from "../lib/validation.js";
 import { HistoricalProjectionClient, type HistoricalProjectionInput } from "../nba/historical-client.js";
 import { predictLearnedProjection } from "../nba/live-learning.js";
@@ -29,6 +30,7 @@ export interface NbaProjectionClients {
   kalshiClient?: KalshiClient;
   historicalClient?: HistoricalProjectionRunner;
   liveTrackingStore?: LiveTrackingStore;
+  settingsStore?: SettingsStore;
 }
 
 type ProjectionScope = "all" | "live";
@@ -101,7 +103,13 @@ export async function getNbaProjections(
     };
   }
 
-  const liveProjection = await projectLiveSection(parsed.eventId, espnClient, kalshiClient, clients.liveTrackingStore);
+  const liveProjection = await projectLiveSection(
+    parsed.eventId,
+    espnClient,
+    kalshiClient,
+    clients.liveTrackingStore,
+    clients.settingsStore
+  );
   const body: NbaProjectionResult["body"] = {
     source: "nba_projection",
     fetched_at: nowIso(),
@@ -144,7 +152,8 @@ async function projectLiveSection(
   eventId: string,
   espnClient: EspnSummaryClient,
   kalshiClient: KalshiClient,
-  liveTrackingStore?: LiveTrackingStore
+  liveTrackingStore?: LiveTrackingStore,
+  settingsStore?: SettingsStore
 ): Promise<ProjectionSection> {
   try {
     const data = await projectNbaLiveScore(
@@ -154,7 +163,7 @@ async function projectLiveSection(
     );
     if ((data.live_projection.data_quality as { status?: unknown } | undefined)?.status === "live") {
       const model = liveTrackingStore?.loadLatestModel();
-      if (model) {
+      if (model && liveEnhancementsEnabled(settingsStore)) {
         const learnedProjection = predictLearnedProjection(model, data);
         if (learnedProjection) {
           data.live_projection.learned_projection = learnedProjection;
@@ -173,6 +182,10 @@ async function projectLiveSection(
       error: errorMessage(error)
     };
   }
+}
+
+function liveEnhancementsEnabled(settingsStore: SettingsStore | undefined): boolean {
+  return settingsStore?.read().live_enhancements_enabled ?? DEFAULT_SETTINGS.live_enhancements_enabled;
 }
 
 function recordLiveTrackingSnapshot(liveTrackingStore: LiveTrackingStore | undefined, data: unknown): void {

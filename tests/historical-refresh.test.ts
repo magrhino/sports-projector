@@ -68,8 +68,39 @@ describe("HistoricalRefreshScheduler", () => {
 });
 
 describe("historicalRefreshArgs", () => {
-  it("passes freshness options to the Python importer", () => {
+  it("passes enhanced freshness options to the Python importer by default", () => {
     expect(historicalRefreshArgs(config())).toEqual([
+      "-m",
+      "nba_historical_projection",
+      "import-sportsdb",
+      "--artifact-dir",
+      "/repo/data/historical",
+      "--api-key",
+      "123",
+      "--recent-days",
+      "3",
+      "--lookahead-days",
+      "2",
+      "--model-kind",
+      "auto",
+      "--calibration",
+      "auto",
+      "--quantiles",
+      "0.05,0.10,0.25,0.50,0.75,0.90,0.95",
+      "--rating-features",
+      "market",
+      "--rating-line-source",
+      "close",
+      "--skill-features",
+      "score-based",
+      "--experimental-market-decorrelation",
+      "--event-id",
+      "2467180"
+    ]);
+  });
+
+  it("can omit enhanced importer flags", () => {
+    expect(historicalRefreshArgs({ ...config(), historicalEnhancementsEnabled: false })).toEqual([
       "-m",
       "nba_historical_projection",
       "import-sportsdb",

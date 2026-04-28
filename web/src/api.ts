@@ -1,4 +1,13 @@
-import type { GameSearchResponse, League, LiveGamesResponse, ProjectionPayload, TrackerStatusPayload } from "./types";
+import type {
+  GameSearchResponse,
+  HistoricalRefreshStatusPayload,
+  League,
+  LiveGamesResponse,
+  ProjectionPayload,
+  ProjectorSettings,
+  SettingsPayload,
+  TrackerStatusPayload
+} from "./types";
 
 export async function searchGames(team: string, league: League, signal?: AbortSignal): Promise<GameSearchResponse> {
   const params = new URLSearchParams({ team, league });
@@ -21,6 +30,28 @@ export async function fetchProjection(
 
 export async function fetchTrackerStatus(signal?: AbortSignal): Promise<TrackerStatusPayload> {
   return fetchJson<TrackerStatusPayload>("/api/nba/live-tracking/status", { signal });
+}
+
+export async function fetchHistoricalRefreshStatus(signal?: AbortSignal): Promise<HistoricalRefreshStatusPayload> {
+  return fetchJson<HistoricalRefreshStatusPayload>("/api/nba/historical-refresh/status", { signal });
+}
+
+export async function fetchProjectorSettings(signal?: AbortSignal): Promise<SettingsPayload> {
+  return fetchJson<SettingsPayload>("/api/settings", { signal });
+}
+
+export async function updateProjectorSettings(
+  patch: Partial<ProjectorSettings>,
+  signal?: AbortSignal
+): Promise<SettingsPayload> {
+  return fetchJson<SettingsPayload>("/api/settings", {
+    body: JSON.stringify(patch),
+    headers: {
+      "content-type": "application/json"
+    },
+    method: "PATCH",
+    signal
+  });
 }
 
 export async function trainLiveModel(signal?: AbortSignal): Promise<TrackerStatusPayload> {

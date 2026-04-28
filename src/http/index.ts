@@ -3,8 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
+import { SettingsStore } from "../lib/settings.js";
 import { HistoricalRefreshScheduler, historicalRefreshConfigFromEnv } from "../nba/historical-refresh.js";
 import type { HistoricalProjectionClient } from "../nba/historical-client.js";
+import { LiveModelTrainingScheduler } from "../nba/live-training-scheduler.js";
 import { maybeCreateLiveTracker } from "../nba/live-tracker.js";
 import { liveTrackingConfig, LiveTrackingStore, type LiveTrackingConfig } from "../nba/live-tracking-store.js";
 import { getLiveGames, searchGamesByTeam } from "./games-search.js";
@@ -18,6 +20,7 @@ import {
   type LiveTrackingHttpContext
 } from "./live-tracking.js";
 import { getNbaProjections } from "./nba-projections.js";
+import { getSettings, updateSettings } from "./settings.js";
 
 const DEFAULT_PORT = 8080;
 
@@ -31,16 +34,18 @@ export function createHttpHandler(
     liveTrackingConfig?: LiveTrackingConfig;
     liveModelTrainToken?: string | null;
     historicalRefreshContext?: HistoricalRefreshHttpContext | null;
+    settingsStore?: SettingsStore;
   } = {}
 ) {
   const publicDir = path.resolve(input.publicDir ?? process.env.SPORTS_PROJECTOR_PUBLIC_DIR ?? "public");
   const espnClient = input.espnClient ?? new EspnClient();
   const kalshiClient = input.kalshiClient ?? new KalshiClient();
   const historicalClient = input.historicalClient;
+  const settingsStore = input.settingsStore ?? new SettingsStore();
   const liveContext =
     input.liveTrackingContext !== undefined
       ? input.liveTrackingContext
-      : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient);
+      : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient, settingsStore);
   const historicalRefreshContext = input.historicalRefreshContext ?? null;
   const liveModelTrainToken =
     input.liveModelTrainToken !== undefined
@@ -61,7 +66,8 @@ export function createHttpHandler(
         espnClient,
         kalshiClient,
         historicalClient,
-        liveTrackingStore: liveContext?.store
+        liveTrackingStore: liveContext?.store,
+        settingsStore
       });
       return;
     }
@@ -78,6 +84,11 @@ export function createHttpHandler(
 
     if (url.pathname === "/api/nba/historical-refresh/status") {
       await handleHistoricalRefreshStatus(request, response, historicalRefreshContext);
+      return;
+    }
+
+    if (url.pathname === "/api/settings") {
+      await handleSettings(request, response, settingsStore, liveModelTrainToken);
       return;
     }
 
@@ -100,8 +111,12 @@ export function createHttpHandler(
   };
 }
 
-function createHistoricalRefreshContext(): HistoricalRefreshHttpContext | null {
-  const scheduler = new HistoricalRefreshScheduler(historicalRefreshConfigFromEnv());
+function createHistoricalRefreshContext(settingsStore: SettingsStore): HistoricalRefreshHttpContext | null {
+  const scheduler = new HistoricalRefreshScheduler(
+    historicalRefreshConfigFromEnv(),
+    undefined,
+    () => settingsStore.read()
+  );
   if (!scheduler.config.enabled) {
     return null;
   }
@@ -112,23 +127,29 @@ function createHistoricalRefreshContext(): HistoricalRefreshHttpContext | null {
 function createLiveTrackingContext(
   config: LiveTrackingConfig,
   espnClient: EspnClient,
-  kalshiClient: KalshiClient
+  kalshiClient: KalshiClient,
+  settingsStore: SettingsStore
 ): LiveTrackingHttpContext | null {
   if (!config.enabled) {
     return null;
   }
   const store = new LiveTrackingStore(config.dbPath);
+  const readSettings = () => settingsStore.read();
   const tracker = maybeCreateLiveTracker({
     config,
     store,
     espnClient,
-    kalshiClient
+    kalshiClient,
+    readSettings
   });
+  const trainer = new LiveModelTrainingScheduler(config, store, readSettings);
   tracker?.start();
+  trainer.start();
   return {
     config,
     store,
-    tracker
+    tracker,
+    trainer
   };
 }
 
@@ -173,6 +194,7 @@ async function handleNbaProjections(
     kalshiClient: KalshiClient;
     historicalClient?: HistoricalProjectionClient;
     liveTrackingStore?: LiveTrackingStore;
+    settingsStore?: SettingsStore;
   }
 ): Promise<void> {
   if (request.method !== "GET") {
@@ -229,6 +251,27 @@ async function handleHistoricalRefreshStatus(
 
   const result = getHistoricalRefreshStatus(context);
   writeJson(response, result.status, result.body);
+}
+
+async function handleSettings(
+  request: IncomingMessage,
+  response: ServerResponse,
+  store: SettingsStore,
+  adminToken: string | null
+): Promise<void> {
+  if (request.method === "GET") {
+    const result = getSettings(store);
+    writeJson(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "PATCH") {
+    const result = await updateSettings(request, store, { adminToken });
+    writeJson(response, result.status, result.body);
+    return;
+  }
+
+  response.setHeader("allow", "GET, PATCH");
+  writeJson(response, 405, { error: "Method not allowed." });
 }
 
 async function serveStatic(
@@ -323,8 +366,10 @@ function isNotFound(error: unknown): boolean {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
+  const settingsStore = new SettingsStore();
   const server = createServer(createHttpHandler({
-    historicalRefreshContext: createHistoricalRefreshContext()
+    settingsStore,
+    historicalRefreshContext: createHistoricalRefreshContext(settingsStore)
   }));
 
   server.listen(port, () => {

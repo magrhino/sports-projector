@@ -6,6 +6,7 @@ import {
   type EspnNormalizedTeam
 } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
+import { DEFAULT_SETTINGS, type SportsProjectorSettings } from "../lib/settings.js";
 import { predictLearnedProjection } from "./live-learning.js";
 import { projectNbaLiveScore } from "./live-tool.js";
 import { type LiveTrackingConfig, LiveTrackingStore } from "./live-tracking-store.js";
@@ -28,7 +29,8 @@ export class LiveNbaTracker {
     private readonly config: LiveTrackingConfig,
     private readonly store: LiveTrackingStore,
     private readonly espnClient: EspnClient,
-    private readonly kalshiClient: KalshiClient
+    private readonly kalshiClient: KalshiClient,
+    private readonly readSettings: () => SportsProjectorSettings = () => DEFAULT_SETTINGS
   ) {}
 
   start(): void {
@@ -90,7 +92,7 @@ export class LiveNbaTracker {
   private async trackEvent(eventId: string): Promise<void> {
     const model = this.store.loadLatestModel();
     const projection = await projectNbaLiveScore({ event_id: eventId, include_debug: true }, this.espnClient, this.kalshiClient);
-    if (model) {
+    if (model && this.readSettings().live_enhancements_enabled) {
       const learnedProjection = predictLearnedProjection(model, projection);
       if (learnedProjection) {
         projection.live_projection.learned_projection = learnedProjection;
@@ -116,11 +118,12 @@ export function maybeCreateLiveTracker(input: {
   store: LiveTrackingStore;
   espnClient: EspnClient;
   kalshiClient: KalshiClient;
+  readSettings?: () => SportsProjectorSettings;
 }): LiveNbaTracker | null {
   if (!input.config.enabled) {
     return null;
   }
-  return new LiveNbaTracker(input.config, input.store, input.espnClient, input.kalshiClient);
+  return new LiveNbaTracker(input.config, input.store, input.espnClient, input.kalshiClient, input.readSettings);
 }
 
 function gameRecord(game: EspnNormalizedGame) {

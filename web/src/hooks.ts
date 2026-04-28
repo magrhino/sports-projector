@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   errorMessage,
   errorPayload,
+  fetchHistoricalRefreshStatus,
   fetchLiveGames,
   fetchProjection,
+  fetchProjectorSettings,
   fetchTrackerStatus,
   searchGames,
-  trainLiveModel
+  trainLiveModel,
+  updateProjectorSettings
 } from "./api";
 import {
   formatDateTime,
@@ -15,7 +18,16 @@ import {
   isLiveGame,
   sortGames
 } from "./format";
-import type { Game, GameSearchResponse, League, ProjectionPayload, TrackerStatusPayload } from "./types";
+import type {
+  Game,
+  GameSearchResponse,
+  HistoricalRefreshStatusPayload,
+  League,
+  ProjectionPayload,
+  ProjectorSettings,
+  SettingsPayload,
+  TrackerStatusPayload
+} from "./types";
 
 export function useLiveGames(league: League) {
   const [games, setGames] = useState<Game[]>([]);
@@ -259,7 +271,8 @@ export function useLiveTrackerStatus() {
     setTraining(true);
     setMessage("Training live model...");
     try {
-      const nextPayload = await trainLiveModel();
+      await trainLiveModel();
+      const nextPayload = await fetchTrackerStatus();
       if (id !== trainRequestId.current) {
         return;
       }
@@ -311,6 +324,119 @@ export function useLiveTrackerStatus() {
         }.`;
 
   return { payload, message, training, train, trainDisabled: disabled, trainTitle: title };
+}
+
+export function useSettingsDashboard() {
+  const [settingsPayload, setSettingsPayload] = useState<SettingsPayload | null>(null);
+  const [trackerPayload, setTrackerPayload] = useState<TrackerStatusPayload | null>(null);
+  const [historicalPayload, setHistoricalPayload] = useState<HistoricalRefreshStatusPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const requestId = useRef(0);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const id = ++requestId.current;
+    setLoading(true);
+    setError("");
+
+    try {
+      const [settings, tracker, historical] = await Promise.all([
+        fetchProjectorSettings(signal),
+        fetchTrackerStatus(signal),
+        fetchHistoricalRefreshStatus(signal)
+      ]);
+      if (id !== requestId.current) {
+        return;
+      }
+      setSettingsPayload(settings);
+      setTrackerPayload(tracker);
+      setHistoricalPayload(historical);
+      setMessage("");
+    } catch (error) {
+      if (signal?.aborted || id !== requestId.current) {
+        return;
+      }
+      setError(errorMessage(error, "Unable to load settings."));
+    } finally {
+      if (id === requestId.current) {
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  const refreshStatuses = useCallback(async () => {
+    const [tracker, historical] = await Promise.all([fetchTrackerStatus(), fetchHistoricalRefreshStatus()]);
+    setTrackerPayload(tracker);
+    setHistoricalPayload(historical);
+  }, []);
+
+  const saveSettings = useCallback(
+    async (patch: Partial<ProjectorSettings>) => {
+      setSaving(true);
+      setError("");
+      setMessage("");
+      try {
+        const nextSettings = await updateProjectorSettings(patch);
+        setSettingsPayload(nextSettings);
+        await refreshStatuses();
+        setMessage("Settings saved.");
+      } catch (error) {
+        setError(errorMessage(error, "Unable to save settings."));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [refreshStatuses]
+  );
+
+  const train = useCallback(async () => {
+    setTraining(true);
+    setError("");
+    setMessage("Training live model...");
+    try {
+      await trainLiveModel();
+      await refreshStatuses();
+      setMessage("Live model trained.");
+    } catch (error) {
+      const payload = errorPayload(error);
+      if (payload && typeof payload === "object" && "tracker" in payload) {
+        setTrackerPayload(payload as TrackerStatusPayload);
+      }
+      setError(formatTrainingError(payload || error));
+      setMessage("");
+    } finally {
+      setTraining(false);
+    }
+  }, [refreshStatuses]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    const timer = window.setInterval(() => {
+      void load();
+    }, 15000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [load]);
+
+  return {
+    settingsPayload,
+    trackerPayload,
+    historicalPayload,
+    loading,
+    saving,
+    training,
+    error,
+    message,
+    load,
+    saveSettings,
+    train
+  };
 }
 
 function trackerStatusMessage(payload: TrackerStatusPayload): string {

@@ -1,5 +1,5 @@
-import { FormEvent, useState } from "react";
-import { useGameSearch, useLiveGames, useLiveTrackerStatus, useProjectionDetail } from "./hooks";
+import { FormEvent, useState, type ReactNode } from "react";
+import { useGameSearch, useLiveGames, useProjectionDetail, useSettingsDashboard } from "./hooks";
 import {
   asRecord,
   displayTeamCode,
@@ -13,16 +13,55 @@ import {
   teamLogoUrl
 } from "./format";
 import type { Game, League, ProjectionMetric, ProjectionSection, Team } from "./types";
+import type {
+  HistoricalRefreshStatusPayload,
+  ProjectorSettings,
+  TrackerStatusPayload
+} from "./types";
 
 const leagues: League[] = ["nba", "nfl", "mlb", "nhl"];
 
 export function App() {
+  const [view, setView] = useState<"workspace" | "settings">("workspace");
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Public sports research</p>
+          <h1>Sports Projector</h1>
+        </div>
+        <div className="header-actions">
+          <button
+            type="button"
+            className={`nav-button${view === "workspace" ? " active" : ""}`}
+            aria-pressed={view === "workspace"}
+            onClick={() => setView("workspace")}
+          >
+            Workspace
+          </button>
+          <button
+            type="button"
+            className={`nav-button${view === "settings" ? " active" : ""}`}
+            aria-pressed={view === "settings"}
+            onClick={() => setView("settings")}
+          >
+            Settings
+          </button>
+        </div>
+      </header>
+
+      {view === "settings" ? <SettingsView /> : <WorkspaceView />}
+    </main>
+  );
+}
+
+function WorkspaceView() {
   const [team, setTeam] = useState("");
   const [league, setLeague] = useState<League>("nba");
   const liveGames = useLiveGames(league);
   const search = useGameSearch();
   const projections = useProjectionDetail(league);
-  const tracker = useLiveTrackerStatus();
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,18 +85,7 @@ export function App() {
   const selectedGameId = projections.selectedGame?.id;
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">Public sports research</p>
-          <h1>Sports Projector</h1>
-        </div>
-        <div className="header-status" aria-label="Current league">
-          <span className="status-dot" />
-          {leagueLabel(league)} workspace
-        </div>
-      </header>
-
+    <>
       <section className="control-panel" aria-label="Game search controls">
         <form className="search-form" onSubmit={submitSearch}>
           <label>
@@ -88,14 +116,6 @@ export function App() {
             {search.loading ? "Searching" : "Search"}
           </button>
         </form>
-
-        <TrackerPanel
-          message={tracker.message}
-          onTrain={tracker.train}
-          trainDisabled={tracker.trainDisabled}
-          trainTitle={tracker.trainTitle}
-          training={tracker.training}
-        />
       </section>
 
       <LiveGamesPanel
@@ -139,29 +159,198 @@ export function App() {
           onRefresh={projections.refresh}
         />
       </div>
-    </main>
+    </>
   );
 }
 
-function TrackerPanel(props: {
-  message: string;
-  training: boolean;
-  trainDisabled: boolean;
-  trainTitle: string;
-  onTrain: () => void;
-}) {
+function SettingsView() {
+  const dashboard = useSettingsDashboard();
+  const settings = dashboard.settingsPayload?.settings;
+  const tracker = dashboard.trackerPayload?.tracker;
+  const trainingState = tracker?.training;
+  const autoTraining = dashboard.trackerPayload?.auto_training;
+  const trainDisabled = dashboard.training || !tracker?.enabled || !trainingState?.ready;
+
   return (
-    <section className="tracker-card" aria-labelledby="tracker-title">
-      <div>
-        <p className="section-kicker">Live NBA tracker</p>
-        <h2 id="tracker-title">Model readiness</h2>
-        <p className="tracker-message">{props.message}</p>
+    <section className="settings-layout" aria-labelledby="settings-title">
+      <div className="panel-heading">
+        <div>
+          <p className="section-kicker">Configuration</p>
+          <h2 id="settings-title">Settings</h2>
+        </div>
+        <button type="button" className="secondary-button" disabled={dashboard.loading} onClick={() => void dashboard.load()}>
+          Refresh
+        </button>
       </div>
-      <button type="button" className="secondary-button" disabled={props.trainDisabled} title={props.trainTitle} onClick={props.onTrain}>
-        {props.training ? "Training" : "Train model"}
-      </button>
+
+      <div className="status-grid">
+        <div className="status-message" role="status" aria-live="polite">
+          {dashboard.loading ? "Loading settings..." : dashboard.message || "\u00a0"}
+        </div>
+        {dashboard.error ? (
+          <div className="error-message" role="alert">
+            {dashboard.error}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="settings-grid">
+        <SettingsPanel title="Enhancements">
+          <SettingsToggle
+            label="Live learned corrections"
+            checked={Boolean(settings?.live_enhancements_enabled)}
+            disabled={!settings || dashboard.saving}
+            onChange={(checked) => void dashboard.saveSettings({ live_enhancements_enabled: checked })}
+          />
+          <SettingsToggle
+            label="Historical enhanced snapshots"
+            checked={Boolean(settings?.historical_enhancements_enabled)}
+            disabled={!settings || dashboard.saving}
+            onChange={(checked) => void dashboard.saveSettings({ historical_enhancements_enabled: checked })}
+          />
+        </SettingsPanel>
+
+        <SettingsPanel title="Live model">
+          <SettingsToggle
+            label="Automatic training"
+            checked={Boolean(settings?.live_auto_training_enabled)}
+            disabled={!settings || dashboard.saving}
+            onChange={(checked) => void dashboard.saveSettings({ live_auto_training_enabled: checked })}
+          />
+          <label className="settings-field">
+            <span>Training interval</span>
+            <select
+              value={settings?.live_training_interval_seconds ?? 3600}
+              disabled={!settings || dashboard.saving}
+              onChange={(event) =>
+                void dashboard.saveSettings({ live_training_interval_seconds: Number(event.target.value) })
+              }
+            >
+              <option value={900}>15 minutes</option>
+              <option value={3600}>1 hour</option>
+              <option value={21600}>6 hours</option>
+              <option value={86400}>24 hours</option>
+            </select>
+          </label>
+          <div className="metric-grid settings-metrics">
+            <SettingsMetric label="Tracking" value={tracker?.enabled ? "Enabled" : "Disabled"} />
+            <SettingsMetric label="Collected snapshots" value={formatCount(tracker?.snapshots)} />
+            <SettingsMetric label="Trainable snapshots" value={formatCount(trainingState?.snapshots)} />
+            <SettingsMetric label="Latest model" value={tracker?.model ? `${tracker.model.sample_count ?? 0} samples` : "None"} />
+            <SettingsMetric label="Auto training" value={autoTraining?.enabled ? "Enabled" : "Disabled"} />
+            <SettingsMetric label="Last auto result" value={autoTrainingStatus(autoTraining)} />
+          </div>
+          <button type="button" className="secondary-button" disabled={trainDisabled} onClick={dashboard.train}>
+            {dashboard.training ? "Training" : "Train model"}
+          </button>
+        </SettingsPanel>
+
+        <HistoricalSettingsPanel status={dashboard.historicalPayload} settings={settings} />
+      </div>
     </section>
   );
+}
+
+function SettingsPanel(props: { title: string; children: ReactNode }) {
+  return (
+    <section className="settings-panel" aria-label={props.title}>
+      <h3>{props.title}</h3>
+      {props.children}
+    </section>
+  );
+}
+
+function SettingsToggle(props: {
+  label: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="toggle-row">
+      <span>{props.label}</span>
+      <input
+        type="checkbox"
+        role="switch"
+        checked={props.checked}
+        disabled={props.disabled}
+        onChange={(event) => props.onChange(event.target.checked)}
+      />
+    </label>
+  );
+}
+
+function SettingsMetric(props: { label: string; value: string }) {
+  return (
+    <div className="metric">
+      <div className="metric-label">{props.label}</div>
+      <div className="metric-value">{props.value}</div>
+    </div>
+  );
+}
+
+function HistoricalSettingsPanel(props: {
+  status: HistoricalRefreshStatusPayload | null;
+  settings: ProjectorSettings | undefined;
+}) {
+  const status = props.status;
+  return (
+    <SettingsPanel title="Historical refresh">
+      <div className="metric-grid settings-metrics">
+        <SettingsMetric label="Refresh" value={status?.enabled ? "Enabled" : "Disabled"} />
+        <SettingsMetric label="Running" value={status?.running ? "Yes" : "No"} />
+        <SettingsMetric label="Enhancements" value={props.settings?.historical_enhancements_enabled ? "Enabled" : "Disabled"} />
+        <SettingsMetric label="Interval" value={formatInterval(status?.interval_seconds)} />
+        <SettingsMetric label="Recent window" value={formatDays(status?.recent_days)} />
+        <SettingsMetric label="Lookahead" value={formatDays(status?.lookahead_days)} />
+        <SettingsMetric label="Last success" value={formatTimestamp(status?.last_success_at)} />
+        <SettingsMetric label="Last error" value={status?.last_error || "None"} />
+      </div>
+    </SettingsPanel>
+  );
+}
+
+function formatCount(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
+}
+
+function formatTimestamp(value: string | null | undefined): string {
+  return value ? formatDateTime(value) : "-";
+}
+
+function formatDays(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value} day${value === 1 ? "" : "s"}` : "-";
+}
+
+function formatInterval(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  if (value % 3600 === 0) {
+    const hours = value / 3600;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  if (value % 60 === 0) {
+    const minutes = value / 60;
+    return `${minutes} minutes`;
+  }
+  return `${value} seconds`;
+}
+
+function autoTrainingStatus(status: TrackerStatusPayload["auto_training"]): string {
+  if (!status) {
+    return "-";
+  }
+  if (status.last_error) {
+    return status.last_error;
+  }
+  if (status.last_skip_reason) {
+    return status.last_skip_reason;
+  }
+  if (status.last_success_at) {
+    return `Trained ${formatTimestamp(status.last_success_at)}`;
+  }
+  return "Pending";
 }
 
 function LiveGamesPanel(props: {

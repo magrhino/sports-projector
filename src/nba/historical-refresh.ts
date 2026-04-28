@@ -5,6 +5,7 @@ import {
   type HistoricalProjectionConfig,
   type HistoricalCommandResult
 } from "./historical-client.js";
+import { DEFAULT_SETTINGS, type SportsProjectorSettings } from "../lib/settings.js";
 
 export interface HistoricalRefreshConfig extends HistoricalProjectionConfig {
   enabled: boolean;
@@ -13,12 +14,14 @@ export interface HistoricalRefreshConfig extends HistoricalProjectionConfig {
   lookaheadDays: number;
   eventIds: string[];
   sportsDbApiKey: string;
+  historicalEnhancementsEnabled?: boolean;
 }
 
 export interface HistoricalRefreshStatus {
   enabled: boolean;
   running: boolean;
   interval_seconds: number;
+  enhancements_enabled: boolean;
   recent_days: number;
   lookahead_days: number;
   event_ids: string[];
@@ -31,6 +34,9 @@ export interface HistoricalRefreshStatus {
 }
 
 export type HistoricalRefreshRunner = (config: HistoricalRefreshConfig) => Promise<HistoricalCommandResult>;
+export type HistoricalSettingsReader = () => SportsProjectorSettings;
+
+const ENHANCED_HISTORICAL_QUANTILES = "0.05,0.10,0.25,0.50,0.75,0.90,0.95";
 
 export class HistoricalRefreshScheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -43,7 +49,8 @@ export class HistoricalRefreshScheduler {
 
   constructor(
     readonly config: HistoricalRefreshConfig,
-    private readonly runRefresh: HistoricalRefreshRunner = runHistoricalRefreshCommand
+    private readonly runRefresh: HistoricalRefreshRunner = runHistoricalRefreshCommand,
+    private readonly readSettings: HistoricalSettingsReader = () => DEFAULT_SETTINGS
   ) {}
 
   start(): void {
@@ -70,7 +77,11 @@ export class HistoricalRefreshScheduler {
     this.running = true;
     this.lastStartedAt = new Date().toISOString();
     try {
-      const result = await this.runRefresh(this.config);
+      const settings = this.readSettings();
+      const result = await this.runRefresh({
+        ...this.config,
+        historicalEnhancementsEnabled: settings.historical_enhancements_enabled
+      });
       this.lastResult = parseRefreshJson(result.stdout);
       this.lastSuccessAt = new Date().toISOString();
       this.lastError = null;
@@ -89,6 +100,7 @@ export class HistoricalRefreshScheduler {
       enabled: this.config.enabled,
       running: this.running,
       interval_seconds: this.config.intervalSeconds,
+      enhancements_enabled: this.safeSettings().historical_enhancements_enabled,
       recent_days: this.config.recentDays,
       lookahead_days: this.config.lookaheadDays,
       event_ids: this.config.eventIds,
@@ -99,6 +111,14 @@ export class HistoricalRefreshScheduler {
       last_error: this.lastError,
       last_result: this.lastResult
     };
+  }
+
+  private safeSettings(): SportsProjectorSettings {
+    try {
+      return this.readSettings();
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
   }
 }
 
@@ -160,10 +180,31 @@ export function historicalRefreshArgs(config: HistoricalRefreshConfig): string[]
     "--lookahead-days",
     String(config.lookaheadDays)
   ];
+  if (historicalEnhancementsEnabled(config)) {
+    args.push(
+      "--model-kind",
+      "auto",
+      "--calibration",
+      "auto",
+      "--quantiles",
+      ENHANCED_HISTORICAL_QUANTILES,
+      "--rating-features",
+      "market",
+      "--rating-line-source",
+      "close",
+      "--skill-features",
+      "score-based",
+      "--experimental-market-decorrelation"
+    );
+  }
   for (const eventId of config.eventIds) {
     args.push("--event-id", eventId);
   }
   return args;
+}
+
+function historicalEnhancementsEnabled(config: HistoricalRefreshConfig): boolean {
+  return config.historicalEnhancementsEnabled ?? DEFAULT_SETTINGS.historical_enhancements_enabled;
 }
 
 function parseRefreshJson(stdout: string): Record<string, unknown> {

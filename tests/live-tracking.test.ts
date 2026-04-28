@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
+import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
+import { LiveModelTrainingScheduler } from "../src/nba/live-training-scheduler.js";
 import { LiveNbaTracker } from "../src/nba/live-tracker.js";
 import { LiveTrackingStore, type LiveTrackingConfig } from "../src/nba/live-tracking-store.js";
 
@@ -65,6 +67,77 @@ describe("LiveTrackingStore", () => {
       expect(status.snapshots).toBe(0);
       expect(status.training.snapshots).toBe(0);
       expect(status.games.tracked).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("LiveModelTrainingScheduler", () => {
+  it("trains when enough new finalized snapshots are available", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedTrainableSnapshots(store, 2);
+      const scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => DEFAULT_SETTINGS);
+
+      const trained = await scheduler.trainIfDue();
+      const status = scheduler.status();
+
+      expect(trained).toBe(true);
+      expect(store.loadLatestModel()?.sample_count).toBe(2);
+      expect(status.last_success_at).toEqual(expect.any(String));
+      expect(status.last_skip_reason).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skips when there are not enough finalized snapshots", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      const scheduler = new LiveModelTrainingScheduler(config(store), store, () => DEFAULT_SETTINGS);
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(trained).toBe(false);
+      expect(scheduler.status().last_skip_reason).toMatch(/Need 50 finalized trainable snapshots/);
+      expect(store.loadLatestModel()).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skips when the latest model already covers the trainable snapshots", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedTrainableSnapshots(store, 2);
+      store.trainLatestModel(2);
+      const scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => DEFAULT_SETTINGS);
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(trained).toBe(false);
+      expect(scheduler.status().last_skip_reason).toMatch(/No new finalized snapshots/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skips when auto training is disabled", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedTrainableSnapshots(store, 2);
+      const scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => ({
+        ...DEFAULT_SETTINGS,
+        live_auto_training_enabled: false
+      }));
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(trained).toBe(false);
+      expect(scheduler.status().enabled).toBe(false);
+      expect(scheduler.status().last_skip_reason).toMatch(/disabled/);
+      expect(store.loadLatestModel()).toBeNull();
     } finally {
       cleanup();
     }
@@ -142,6 +215,27 @@ function createStore(): { store: LiveTrackingStore; cleanup: () => void } {
       rmSync(dir, { recursive: true, force: true });
     }
   };
+}
+
+function seedTrainableSnapshots(store: LiveTrackingStore, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    store.recordProjectionSnapshot({
+      trigger: "tracker",
+      payload: projectionPayload({
+        eventId: "401",
+        homeScore: 80 + index,
+        awayScore: 78 + index,
+        projectedTotal: 202 + index
+      })
+    });
+  }
+  store.upsertGame({
+    event_id: "401",
+    final_home_score: 101,
+    final_away_score: 99,
+    status_state: "post",
+    finalized_at: "2026-04-26T02:00:00Z"
+  });
 }
 
 function config(store: LiveTrackingStore): LiveTrackingConfig {

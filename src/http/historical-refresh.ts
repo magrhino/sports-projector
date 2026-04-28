@@ -11,6 +11,7 @@ export function getHistoricalRefreshStatus(context: HistoricalRefreshHttpContext
       body: {
         enabled: false,
         running: false,
+        enhancements_enabled: false,
         last_error: null
       }
     };

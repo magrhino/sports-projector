@@ -138,14 +138,17 @@ codex mcp add sports-projector -- docker run -i --rm ghcr.io/magrhino/sports-pro
 
 ## HTTP API
 
-The web service exposes read-only endpoints:
+The web service exposes projection/status endpoints plus protected local administration endpoints:
 
 ```bash
 curl "http://localhost:8080/api/games/search?team=Celtics&league=nba"
 curl "http://localhost:8080/api/games/live?league=nba"
 curl "http://localhost:8080/api/nba/projections?event_id=401000000&scope=live"
 curl "http://localhost:8080/api/nba/live-tracking/status"
+curl "http://localhost:8080/api/nba/historical-refresh/status"
+curl "http://localhost:8080/api/settings"
 curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
+curl -X PATCH -H "Content-Type: application/json" -d '{"live_enhancements_enabled":false}' "http://localhost:8080/api/settings"
 ```
 
 Use `scope=live` when the deployment does not have Python historical artifacts available. Use `scope=all` only when historical projection is configured.
@@ -211,7 +214,7 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
 
 `market_lines.csv` should include `game_date` or `date`, `home_team`, `away_team`, and any of `closing_total`, `closing_spread`, `opening_total`, or `opening_spread`. `availability.csv` should include `date`, `team`, and optional `unavailable_minutes` / `unavailable_value` aggregates. When closing market lines are present, training can select market-residual models and stores rolling-origin validation metrics plus calibrated 68/80/90 percent residual intervals in `manifest.json`.
 
-Optional calibrated historical artifacts are additive to the existing score and margin projections. When local market lines are available, enable calibrated probabilities, residual quantiles, market-derived team ratings, score-based team skills, and experimental market diagnostics during artifact refresh:
+Optional calibrated historical artifacts are additive to the existing score and margin projections. Scheduled web refreshes enable calibrated probabilities, residual quantiles, market-derived team ratings, score-based team skills, and experimental market diagnostics by default through the server settings file. When running the importer manually with local market lines, use:
 
 ```bash
 PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
@@ -275,7 +278,7 @@ The historical bridge runs `python -m nba_historical_projection predict` with JS
 
 ## Live tracking
 
-Live tracking is disabled by default. When enabled, the web app polls live NBA games, stores projection snapshots in SQLite, and can train a local correction model after finalized snapshots exist.
+Live tracking is disabled by default. When enabled, the web app polls live NBA games, stores projection snapshots in SQLite, and automatically trains a local correction model after enough finalized snapshots exist. Auto-training runs at startup and then on the configured interval, skipping runs when the latest model already covers the available trainable snapshots.
 
 ```bash
 SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED=true \
@@ -283,7 +286,7 @@ SPORTS_PROJECTOR_LIVE_DB_PATH=data/live-tracking/nba-live.sqlite \
 npm run start:web
 ```
 
-Training can be triggered through the API from a loopback client:
+Training can also be triggered through the API from a loopback client:
 
 ```bash
 curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
@@ -301,7 +304,7 @@ Back up `SPORTS_PROJECTOR_LIVE_DB_PATH` before moving or replacing a production 
 
 ## Historical refresh
 
-The web process refreshes SportsDB historical artifacts by default. Disable this if artifacts are managed by cron, systemd, or another operator workflow:
+The web process refreshes SportsDB historical artifacts by default. Enhanced historical snapshots are enabled by default in `data/settings.json`; disable that setting through the web settings view or `PATCH /api/settings` if you need the simpler baseline importer flags. Disable the scheduler itself if artifacts are managed by cron, systemd, or another operator workflow:
 
 ```bash
 SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED=false \
@@ -322,6 +325,7 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP web app port |
 | `SPORTS_PROJECTOR_PUBLIC_DIR` | `public` | Static asset directory for the web server |
+| `SPORTS_PROJECTOR_SETTINGS_PATH` | `data/settings.json` under the root | JSON settings file for enhancement toggles and live auto-training interval |
 | `SPORTS_KALSHI_HTTP_TIMEOUT_MS` | `10000` | Public HTTP request timeout, clamped from 1000 to 30000 ms |
 | `SPORTS_KALSHI_ESPN_SCOREBOARD_TTL_SECONDS` | `20` | ESPN scoreboard cache TTL, clamped from 0 to 30 seconds |
 | `SPORTS_KALSHI_ESPN_DETAIL_TTL_SECONDS` | `30` | ESPN detail cache TTL, clamped from 0 to 60 seconds |

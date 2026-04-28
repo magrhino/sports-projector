@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
@@ -10,6 +11,7 @@ import type { HistoricalRefreshHttpContext } from "../src/http/historical-refres
 import { HistoricalRefreshScheduler } from "../src/nba/historical-refresh.js";
 import type { LiveTrackingHttpContext } from "../src/http/live-tracking.js";
 import { HistoricalProjectionClient } from "../src/nba/historical-client.js";
+import { SettingsStore } from "../src/lib/settings.js";
 import { LiveTrackingStore } from "../src/nba/live-tracking-store.js";
 
 describe("createHttpHandler", () => {
@@ -182,6 +184,85 @@ describe("createHttpHandler", () => {
     });
   });
 
+  it("returns settings defaults", async () => {
+    const { store, cleanup } = createSettingsStore();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          settingsStore: store
+        }),
+        "/api/settings"
+      );
+
+      const payload = JSON.parse(response.body);
+      expect(response.statusCode).toBe(200);
+      expect(payload.settings).toMatchObject({
+        live_enhancements_enabled: true,
+        historical_enhancements_enabled: true,
+        live_auto_training_enabled: true,
+        live_training_interval_seconds: 3600
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects remote settings updates without the configured admin token", async () => {
+    const { store, cleanup } = createSettingsStore();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          settingsStore: store
+        }),
+        "/api/settings",
+        "PATCH",
+        {
+          body: JSON.stringify({ live_enhancements_enabled: false }),
+          headers: { "content-type": "application/json" },
+          remoteAddress: "203.0.113.10"
+        }
+      );
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toMatch(/local admin request/i);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("persists protected settings updates", async () => {
+    const { store, cleanup } = createSettingsStore();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          settingsStore: store,
+          liveModelTrainToken: "test-admin-token"
+        }),
+        "/api/settings",
+        "PATCH",
+        {
+          body: JSON.stringify({
+            live_enhancements_enabled: false,
+            live_training_interval_seconds: 21600
+          }),
+          headers: {
+            "content-type": "application/json",
+            "x-sports-projector-admin-token": "test-admin-token"
+          },
+          remoteAddress: "203.0.113.10"
+        }
+      );
+
+      const payload = JSON.parse(response.body);
+      expect(response.statusCode).toBe(200);
+      expect(payload.settings.live_enhancements_enabled).toBe(false);
+      expect(payload.settings.live_training_interval_seconds).toBe(21600);
+      expect(store.read().live_enhancements_enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("rejects live model training without an admin request guard", async () => {
     const context = createLiveTrackingContext();
     try {
@@ -340,6 +421,57 @@ describe("createHttpHandler", () => {
       context.cleanup();
     }
   });
+
+  it("attaches learned live corrections when live enhancements are enabled", async () => {
+    const context = createLiveTrackingContext();
+    const { store: settingsStore, cleanup: cleanupSettings } = createSettingsStore();
+    seedLiveModel(context.store);
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+          kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+          liveTrackingContext: context,
+          settingsStore
+        }),
+        "/api/nba/projections?event_id=401&scope=live"
+      );
+
+      const payload = JSON.parse(response.body) as ProjectionResponse;
+      expect(response.statusCode).toBe(200);
+      expect(payload.live_projection.data?.live_projection.learned_projection).toBeDefined();
+    } finally {
+      context.store.close();
+      context.cleanup();
+      cleanupSettings();
+    }
+  });
+
+  it("skips learned live corrections when live enhancements are disabled", async () => {
+    const context = createLiveTrackingContext();
+    const { store: settingsStore, cleanup: cleanupSettings } = createSettingsStore();
+    seedLiveModel(context.store);
+    settingsStore.update({ live_enhancements_enabled: false });
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+          kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+          liveTrackingContext: context,
+          settingsStore
+        }),
+        "/api/nba/projections?event_id=401&scope=live"
+      );
+
+      const payload = JSON.parse(response.body) as ProjectionResponse;
+      expect(response.statusCode).toBe(200);
+      expect(payload.live_projection.data?.live_projection.learned_projection).toBeUndefined();
+    } finally {
+      context.store.close();
+      context.cleanup();
+      cleanupSettings();
+    }
+  });
 });
 
 async function callHandler(
@@ -347,18 +479,21 @@ async function callHandler(
   url: string,
   method = "GET",
   options: {
+    body?: string;
     headers?: Record<string, string>;
     remoteAddress?: string;
   } = {}
 ): Promise<ResponseDouble> {
   const response = createResponseDouble();
+  const request = Readable.from(options.body === undefined ? [] : [options.body]) as IncomingMessage;
+  Object.assign(request, {
+    method,
+    url,
+    headers: { host: "localhost:bad", ...options.headers },
+    socket: { remoteAddress: options.remoteAddress ?? "203.0.113.10" }
+  });
   await handler(
-    {
-      method,
-      url,
-      headers: { host: "localhost:bad", ...options.headers },
-      socket: { remoteAddress: options.remoteAddress ?? "203.0.113.10" }
-    } as IncomingMessage,
+    request,
     response
   );
   return response;
@@ -377,6 +512,15 @@ function createLiveTrackingContext(): LiveTrackingHttpContext & { cleanup: () =>
     },
     store,
     tracker: null,
+    trainer: null,
+    cleanup: () => rmSync(dir, { recursive: true, force: true })
+  };
+}
+
+function createSettingsStore(): { store: SettingsStore; cleanup: () => void } {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-http-settings-"));
+  return {
+    store: new SettingsStore(path.join(dir, "settings.json")),
     cleanup: () => rmSync(dir, { recursive: true, force: true })
   };
 }
