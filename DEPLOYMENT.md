@@ -1,6 +1,6 @@
 # Deployment
 
-This is the production reference for running Sports Projector as a local MCP server or as the minimal read-only web app. For local development and tool examples, see the [README](README.md).
+This is the deployment reference for running Sports Projector as a local MCP server or as the minimal read-only web app. For the GHCR quick start and tool examples, see the [README](README.md).
 
 Sports Projector is informational research tooling only. It uses public unauthenticated ESPN and Kalshi endpoints, plus optional local NBA historical artifacts supplied by the operator. It does not place trades, manage accounts, or provide betting advice.
 
@@ -31,6 +31,15 @@ docker run -d \
 ```
 
 Use the exact `vX.Y.Z` release tag for reproducible production deploys. The image is also tagged with the bare SemVer version, major/minor, major, and `latest`.
+
+For a quick GHCR-based run:
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -e PORT=8080 \
+  ghcr.io/magrhino/sports-projector:latest
+```
 
 ### Release automation
 
@@ -121,6 +130,12 @@ codex mcp add sports-projector -- npm run mcp
 
 For installed package usage, point the MCP client at the built package command or at `node dist/index.js` in the deployment directory.
 
+To run MCP directly from the GHCR image:
+
+```bash
+codex mcp add sports-projector -- docker run -i --rm ghcr.io/magrhino/sports-projector:latest node dist/index.js
+```
+
 ## HTTP API
 
 The web service exposes read-only endpoints:
@@ -144,9 +159,57 @@ Build or validate artifacts from a source checkout:
 ```bash
 PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical
+PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir data/historical --write-state --log-run
 PYTHONPATH=python python3 -m nba_historical_projection inventory-artifacts --artifact-dir data/historical
 PYTHONPATH=python python3 -m nba_historical_projection evaluate --artifact-dir data/historical
+PYTHONPATH=python python3 -m nba_historical_projection predict --artifact-dir data/historical < request.json
 ```
+
+The repository includes a tiny deterministic fixture artifact bundle at `fixtures/nba-historical-linear` for local validation. It uses `linear_json` models rather than generated XGBoost artifacts:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection validate-artifacts --artifact-dir fixtures/nba-historical-linear
+npm test -- tests/nba-historical.test.ts
+```
+
+The local generated state files are:
+
+- `data/historical/artifact_manifest.json`: inventory of local model/team-stat artifacts, feature counts, file sizes, date-table ranges when SQLite team stats are configured, and validation status.
+- `data/historical/artifact_import_log.jsonl`: append-only summaries for validation and training runs.
+
+SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports. Imports supplement season payloads with recent day events, upcoming day snapshots, and each team's latest event because some SportsDB season responses are capped or stale.
+
+To force a known SportsDB event into the artifacts:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --event-id 2467180
+```
+
+To pin seasons explicitly:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --season 2024-2025 \
+  --season 2025-2026
+```
+
+SportsDB import is intentionally present-day weighted by default. Use `--lookback-seasons` to widen or narrow the rolling history, and `--recent-days` / `--lookahead-days` to adjust the current refresh window. The importer uses only pregame features derived from prior completed games for each training row; future scheduled games can create prediction snapshot tables but are excluded from model targets until scores are available.
+
+Optional local CSVs can enrich the offline artifacts without adding live network origins:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
+  --artifact-dir data/historical \
+  --market-lines-csv market_lines.csv \
+  --availability-csv availability.csv \
+  --model-kind auto \
+  --validation-splits 3
+```
+
+`market_lines.csv` should include `game_date` or `date`, `home_team`, `away_team`, and any of `closing_total`, `closing_spread`, `opening_total`, or `opening_spread`. `availability.csv` should include `date`, `team`, and optional `unavailable_minutes` / `unavailable_value` aggregates. When closing market lines are present, training can select market-residual models and stores rolling-origin validation metrics plus calibrated 68/80/90 percent residual intervals in `manifest.json`.
 
 Optional calibrated historical artifacts are additive to the existing score and margin projections. When local market lines are available, enable calibrated probabilities, residual quantiles, market-derived team ratings, score-based team skills, and experimental market diagnostics during artifact refresh:
 
@@ -164,6 +227,40 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
 ```
 
 The deployed prediction bridge automatically reads these sections from `manifest.json` when present. Requests that include `market_total` or `market_spread` can return calibrated over/under and cover probabilities, ordered total and margin quantiles, median fields, and market-comparison diagnostics. Treat these outputs as uncertainty summaries for research, not guaranteed outcomes or betting advice.
+
+Calibration uses rolling-origin out-of-fold predictions to report Brier score, log-loss, expected calibration error, and reliability bins for totals and spreads. Prediction output includes bounded probabilities such as over/under market total, home/away cover, and home win when enough artifact metadata or residual uncertainty is available.
+
+Quantile artifacts use empirical rolling-origin residual quantiles by default, so they do not require extra Python dependencies. Prediction output can include ordered total and home-margin quantiles plus median fields. Treat the intervals and probabilities as uncertainty summaries, not guaranteed outcomes or betting advice.
+
+Market-rating features derive prior team-strength signals from available opening or closing market lines. Score-skill features derive prior offensive and defensive strength from completed scores. Both are computed online before each training row is emitted, then updated only after the game result is consumed.
+
+Use `evaluate` to compare before/after runs from the same rolling-origin split. Trust calibration metrics, interval coverage, and pinball loss alongside RMSE/MAE; market-decorrelation and closing-line-value diagnostics are experimental and are not default selection criteria.
+
+Training historical XGBoost regressors from a prepared SQLite dataset requires Python packages from the adapted historical stack, including `pandas`, `numpy`, and `xgboost`:
+
+```bash
+PYTHONPATH=python python3 -m nba_historical_projection train \
+  --dataset Data/dataset.sqlite \
+  --table dataset_2012-26 \
+  --artifact-dir data/historical \
+  --season 2012-13 \
+  --season 2025-26 \
+  --model-kind auto \
+  --early-stopping-rounds 25 \
+  --validation-splits 3
+```
+
+The training dataset must include numeric `Score` and `Home-Margin` targets. Market-residual training, calibration, and market comparisons require market total/spread columns such as `MARKET_TOTAL_CLOSE`, `MARKET_SPREAD_CLOSE`, opening lines, and line moves. Feature snapshots should contain only information available before game start. Closing lines are appropriate only for a closing-line pregame prediction scenario; otherwise use opening lines or caller-provided market inputs.
+
+Training writes `manifest.json` with numeric median feature defaults, refreshes `artifact_manifest.json`, and appends a `train` event to `artifact_import_log.jsonl`.
+
+Research-paper mapping:
+
+- Walsh/Joshi: calibration-first reliability metrics and probability outputs.
+- Hubacek/Sir: explicit, opt-in market-decorrelation/value-signal diagnostics.
+- Dmochowski: quantile summaries and uncertainty-aware edge status.
+- Wunderlich/Memmert: market-implied team rating features from prior odds/lines.
+- Guo/Sanner/Graepel/Buntine: online score-based offensive and defensive skill features.
 
 Configure the Node service to use the artifact directory:
 
@@ -190,6 +287,12 @@ Training can be triggered through the API from a loopback client:
 
 ```bash
 curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
+```
+
+Train the local live correction model from a source checkout after enough finalized snapshots have been collected:
+
+```bash
+npm run train:live
 ```
 
 For protected remote administration, set `SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN` and send the same value in `X-Sports-Projector-Admin-Token` through an authenticated proxy or admin client.
@@ -252,6 +355,33 @@ Production deployments should allow outbound HTTPS to:
 
 User input is validated as path/query data, not treated as arbitrary URLs.
 
+Kalshi public endpoints used:
+
+- `https://api.elections.kalshi.com/trade-api/v2/markets`
+- `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}`
+- `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook`
+- `https://api.elections.kalshi.com/trade-api/v2/markets/trades`
+- `https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}`
+- `https://api.elections.kalshi.com/trade-api/v2/milestones`
+- `https://api.elections.kalshi.com/trade-api/v2/live_data/milestone/{milestone_id}`
+- `https://api.elections.kalshi.com/trade-api/v2/live_data/milestone/{milestone_id}/game_stats`
+
+ESPN public endpoints are unofficial and undocumented. They can change or become unavailable without notice.
+
+The historical projection bridge does not fetch network data during MCP prediction. It reads local artifacts only.
+
+## Scope boundaries
+
+Explicitly out of scope for v1:
+
+- Kalshi API keys, private keys, OAuth, login cookies, WebSockets, authenticated REST calls, trading, order placement, order cancellation, account balances, portfolio, fills, or positions.
+- ESPN auth cookies.
+- The Odds API, Sportradar, RapidAPI, or any paid/provider key.
+- Automated betting, bet ranking, wager recommendations, dashboards, PostgreSQL, Prisma, background sync jobs, user portfolio concepts, or bet tracking.
+- Player props unless they are present in public unauthenticated ESPN/Kalshi data returned by the supported endpoints.
+
+Provider-specific historical backfills are delegated to the source data project. This repo inventories, validates, trains, and serves local historical projection artifacts.
+
 ## Upgrading
 
 For source deployments:
@@ -296,3 +426,15 @@ npm run build
 npm test
 PYTHONPATH=python python3 -m unittest discover -s python/tests
 ```
+
+Live ESPN and Kalshi smoke tests are skipped by default so normal CI does not depend on external network availability. To run them explicitly from a network-enabled environment:
+
+```bash
+SPORTS_PROJECTOR_LIVE_TESTS=1 npm test -- tests/live-public-endpoints.test.ts
+```
+
+These tests make unauthenticated public requests to a small ESPN endpoint matrix for supported NBA/NFL/MLB/NHL scoreboard, teams, and specific-team endpoints, plus one Kalshi markets request. They validate endpoint health, client routing, source URLs, and stable top-level response shape only; they do not assert volatile scores, schedules, prices, or market counts.
+
+## Reference notes
+
+BetTrack was used only as idea/reference material for prompt style and sports MCP ergonomics. This server does not copy BetTrack architecture and does not include its dashboard, database, odds provider integration, bet tracking, or portfolio concepts.
