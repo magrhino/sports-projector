@@ -13,7 +13,6 @@ export interface LiveTrackingConfig {
 
 export interface LiveTrackingStatus {
   enabled: boolean;
-  db_path: string;
   games: {
     tracked: number;
     live: number;
@@ -301,7 +300,6 @@ export class LiveTrackingStore {
 
     return {
       enabled,
-      db_path: this.dbPath,
       games: {
         tracked: gameCounts.tracked,
         live: gameCounts.live ?? 0,

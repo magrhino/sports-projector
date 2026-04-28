@@ -130,7 +130,7 @@ curl "http://localhost:8080/api/games/search?team=Celtics&league=nba"
 curl "http://localhost:8080/api/games/live?league=nba"
 curl "http://localhost:8080/api/nba/projections?event_id=401000000&scope=live"
 curl "http://localhost:8080/api/nba/live-tracking/status"
-curl -X POST "http://localhost:8080/api/nba/live-model/train"
+curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
 ```
 
 Use `scope=live` when the deployment does not have Python historical artifacts available. Use `scope=all` only when historical projection is configured.
@@ -186,11 +186,13 @@ SPORTS_PROJECTOR_LIVE_DB_PATH=data/live-tracking/nba-live.sqlite \
 npm run start:web
 ```
 
-Training can be triggered through the API:
+Training can be triggered through the API from a loopback client:
 
 ```bash
-curl -X POST "http://localhost:8080/api/nba/live-model/train"
+curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
 ```
+
+For protected remote administration, set `SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN` and send the same value in `X-Sports-Projector-Admin-Token` through an authenticated proxy or admin client.
 
 Back up `SPORTS_PROJECTOR_LIVE_DB_PATH` before moving or replacing a production deployment if you want to preserve collected snapshots and trained live models.
 
@@ -236,6 +238,7 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Tracker polling interval, clamped from 5 to 300 seconds |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_CONCURRENCY` | `2` | Concurrent live event projections, clamped from 1 to 8 |
 | `SPORTS_PROJECTOR_LIVE_MODEL_MIN_SNAPSHOTS` | `50` | Minimum finalized snapshots required to train the live correction model |
+| `SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN` | empty | Optional admin token for protected remote live-model training requests |
 
 ## Network access
 

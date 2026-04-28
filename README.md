@@ -57,8 +57,10 @@ Live tracking endpoints:
 
 ```bash
 curl "http://localhost:8080/api/nba/live-tracking/status"
-curl -X POST "http://localhost:8080/api/nba/live-model/train"
+curl -X POST -H "X-Sports-Projector-Action: train-live-model" "http://localhost:8080/api/nba/live-model/train"
 ```
+
+Live model training requests must include the action header and come from a loopback client. For protected remote administration, set `SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN` and send the same value in `X-Sports-Projector-Admin-Token` through an authenticated proxy or admin client.
 
 ## Codex MCP Setup
 
@@ -155,6 +157,7 @@ All configuration is optional.
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Live tracker polling interval, clamped from 5 to 300 seconds |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_CONCURRENCY` | `2` | Concurrent live event projections, clamped from 1 to 8 |
 | `SPORTS_PROJECTOR_LIVE_MODEL_MIN_SNAPSHOTS` | `50` | Minimum finalized snapshots required to train the live correction model |
+| `SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN` | empty | Optional admin token for protected remote live-model training requests |
 
 Historical artifact commands:
 

@@ -25,6 +25,9 @@ export async function fetchTrackerStatus(signal?: AbortSignal): Promise<TrackerS
 
 export async function trainLiveModel(signal?: AbortSignal): Promise<TrackerStatusPayload> {
   return fetchJson<TrackerStatusPayload>("/api/nba/live-model/train", {
+    headers: {
+      "x-sports-projector-action": "train-live-model"
+    },
     method: "POST",
     signal
   });

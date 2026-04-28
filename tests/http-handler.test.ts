@@ -155,10 +155,12 @@ describe("createHttpHandler", () => {
 
   it("returns live tracking status", async () => {
     const response = await callHandler(createHttpHandler(), "/api/nba/live-tracking/status");
+    const payload = JSON.parse(response.body);
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body).tracker.enabled).toBe(false);
-    expect(JSON.parse(response.body).tracker.training.snapshots).toBe(0);
+    expect(payload.tracker.enabled).toBe(false);
+    expect(payload.tracker).not.toHaveProperty("db_path");
+    expect(payload.tracker.training.snapshots).toBe(0);
   });
 
   it("returns historical refresh status", async () => {
@@ -180,6 +182,53 @@ describe("createHttpHandler", () => {
     });
   });
 
+  it("rejects live model training without an admin request guard", async () => {
+    const context = createLiveTrackingContext();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          liveTrackingContext: context
+        }),
+        "/api/nba/live-model/train",
+        "POST",
+        {
+          remoteAddress: "::1"
+        }
+      );
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toMatch(/local admin request/i);
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
+  it("rejects remote live model training without the configured admin token", async () => {
+    const context = createLiveTrackingContext();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          liveTrackingContext: context
+        }),
+        "/api/nba/live-model/train",
+        "POST",
+        {
+          headers: {
+            "x-sports-projector-action": "train-live-model"
+          },
+          remoteAddress: "203.0.113.10"
+        }
+      );
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toMatch(/local admin request/i);
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
   it("returns a training error when there are not enough finalized snapshots", async () => {
     const context = createLiveTrackingContext();
     try {
@@ -188,13 +237,46 @@ describe("createHttpHandler", () => {
           liveTrackingContext: context
         }),
         "/api/nba/live-model/train",
-        "POST"
+        "POST",
+        {
+          headers: {
+            "x-sports-projector-action": "train-live-model"
+          },
+          remoteAddress: "::1"
+        }
       );
 
       expect(response.statusCode).toBe(400);
       const payload = JSON.parse(response.body);
       expect(payload.error).toMatch(/Need at least/i);
       expect(payload.tracker.training.snapshots).toBe(0);
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
+  it("allows protected live model training with the configured admin token", async () => {
+    const context = createLiveTrackingContext();
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          liveTrackingContext: context,
+          liveModelTrainToken: "test-admin-token"
+        }),
+        "/api/nba/live-model/train",
+        "POST",
+        {
+          headers: {
+            "x-sports-projector-action": "train-live-model",
+            "x-sports-projector-admin-token": "test-admin-token"
+          },
+          remoteAddress: "203.0.113.10"
+        }
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error).toMatch(/Need at least/i);
     } finally {
       context.store.close();
       context.cleanup();
@@ -263,14 +345,19 @@ describe("createHttpHandler", () => {
 async function callHandler(
   handler: ReturnType<typeof createHttpHandler>,
   url: string,
-  method = "GET"
+  method = "GET",
+  options: {
+    headers?: Record<string, string>;
+    remoteAddress?: string;
+  } = {}
 ): Promise<ResponseDouble> {
   const response = createResponseDouble();
   await handler(
     {
       method,
       url,
-      headers: { host: "localhost:bad" }
+      headers: { host: "localhost:bad", ...options.headers },
+      socket: { remoteAddress: options.remoteAddress ?? "203.0.113.10" }
     } as IncomingMessage,
     response
   );

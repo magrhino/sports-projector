@@ -29,6 +29,7 @@ export function createHttpHandler(
     historicalClient?: HistoricalProjectionClient;
     liveTrackingContext?: LiveTrackingHttpContext | null;
     liveTrackingConfig?: LiveTrackingConfig;
+    liveModelTrainToken?: string | null;
     historicalRefreshContext?: HistoricalRefreshHttpContext | null;
   } = {}
 ) {
@@ -41,6 +42,10 @@ export function createHttpHandler(
       ? input.liveTrackingContext
       : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient);
   const historicalRefreshContext = input.historicalRefreshContext ?? null;
+  const liveModelTrainToken =
+    input.liveModelTrainToken !== undefined
+      ? input.liveModelTrainToken
+      : process.env.SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN ?? null;
 
   return async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let url: URL;
@@ -67,7 +72,7 @@ export function createHttpHandler(
     }
 
     if (url.pathname === "/api/nba/live-model/train") {
-      await handleLiveModelTrain(request, response, liveContext);
+      await handleLiveModelTrain(request, response, liveContext, liveModelTrainToken);
       return;
     }
 
@@ -198,7 +203,8 @@ async function handleLiveTrackingStatus(
 async function handleLiveModelTrain(
   request: IncomingMessage,
   response: ServerResponse,
-  context: LiveTrackingHttpContext | null
+  context: LiveTrackingHttpContext | null,
+  adminToken: string | null
 ): Promise<void> {
   if (request.method !== "POST") {
     response.setHeader("allow", "POST");
@@ -206,7 +212,7 @@ async function handleLiveModelTrain(
     return;
   }
 
-  const result = trainLiveModel(context);
+  const result = trainLiveModel(request, context, { adminToken });
   writeJson(response, result.status, result.body);
 }
 
