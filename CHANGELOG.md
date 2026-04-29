@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.2.1...sports-projector-v0.3.0) (2026-04-29)
+
+
+### Features
+
+* **settings:** add default enhancements and live auto training ([46be046](https://github.com/magrhino/sports-projector/commit/46be046e5cc0f08080bb8b3b56880b53f3beccb5))
+
 ## [0.2.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.2.0...sports-projector-v0.2.1) (2026-04-28)
 
 
