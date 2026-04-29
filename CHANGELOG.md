@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.4.1...sports-projector-v0.5.0) (2026-04-29)
+
+
+### Features
+
+* **web:** add footer repository link and version ([7c54444](https://github.com/magrhino/sports-projector/commit/7c54444422ee58b1637b4ce276a55fe23707ab52))
+
 ## [0.4.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.4.0...sports-projector-v0.4.1) (2026-04-29)
 
 
