@@ -96,6 +96,9 @@ tr:focus-visible {
 }
 
 .app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
   width: min(1380px, calc(100% - 32px));
   margin: 0 auto;
   padding: 28px 0 40px;
@@ -172,6 +175,49 @@ h3 {
   height: 9px;
   border-radius: 999px;
   background: var(--green);
+}
+
+.app-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 30px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
+.github-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-self: center;
+  gap: 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.github-link:hover {
+  color: var(--primary);
+}
+
+.github-link:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.github-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.app-version {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .control-panel,
