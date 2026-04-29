@@ -1,7 +1,17 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { trainLiveModel, type LiveModelArtifact, type LiveTrainingRow } from "./live-learning.js";
+import {
+  evaluateLiveModel,
+  liveModelAccuracyGate,
+  reviewDataSources,
+  trainLiveModel,
+  type LiveModelAccuracyGate,
+  type LiveModelArtifact,
+  type LiveModelEvaluation,
+  type LiveModelReviewDataSource,
+  type LiveTrainingRow
+} from "./live-learning.js";
 
 export interface LiveTrackingConfig {
   enabled: boolean;
@@ -40,12 +50,36 @@ export interface LiveTrackingStatus {
     game_count: number | null;
     effective_sample_count: number | null;
     metrics: LiveModelArtifact["metrics"];
+    accuracy_gate: LiveModelAccuracyGate;
+    evaluation: LiveModelEvaluation | null;
   } | null;
 }
 
 export interface LiveTrainingResult {
   status: "trained";
   model: LiveModelArtifact;
+}
+
+export interface LiveModelReviewResult {
+  status: "reviewed";
+  db_path: string;
+  generated_at: string;
+  training: {
+    snapshots: number;
+    min_snapshots: number;
+    ready: boolean;
+  };
+  data_sources: LiveModelReviewDataSource[];
+  latest_model: {
+    trained_at: string;
+    sample_count: number;
+    game_count: number | null;
+    effective_sample_count: number | null;
+    metrics: LiveModelArtifact["metrics"];
+    accuracy_gate: LiveModelAccuracyGate;
+    evaluation: LiveModelEvaluation | null;
+    local_snapshot_review: LiveModelEvaluation;
+  } | null;
 }
 
 export interface ProjectionSnapshotInput {
@@ -271,8 +305,37 @@ export class LiveTrackingStore {
         feature_columns_json: jsonString(model.feature_columns),
         metrics_json: jsonString(model.metrics),
         artifact_json: jsonString(model)
-      });
+    });
     return { status: "trained", model };
+  }
+
+  reviewLatestModel(minSnapshots: number): LiveModelReviewResult {
+    const rows = this.trainingRows();
+    const trainingSnapshots = rows.length;
+    const model = this.loadLatestModel();
+    return {
+      status: "reviewed",
+      db_path: this.dbPath,
+      generated_at: new Date().toISOString(),
+      training: {
+        snapshots: trainingSnapshots,
+        min_snapshots: minSnapshots,
+        ready: trainingSnapshots >= minSnapshots
+      },
+      data_sources: reviewDataSources(trainingSnapshots, minSnapshots),
+      latest_model: model
+        ? {
+            trained_at: model.trained_at,
+            sample_count: model.sample_count,
+            game_count: model.game_count ?? null,
+            effective_sample_count: model.effective_sample_count ?? null,
+            metrics: model.metrics,
+            accuracy_gate: liveModelAccuracyGate(model),
+            evaluation: model.evaluation ?? null,
+            local_snapshot_review: evaluateLiveModel(model, rows)
+          }
+        : null
+    };
   }
 
   status(enabled = true, minSnapshots: number | null = null): LiveTrackingStatus {
@@ -331,7 +394,9 @@ export class LiveTrackingStore {
             sample_count: model.sample_count,
             game_count: model.game_count ?? null,
             effective_sample_count: model.effective_sample_count ?? null,
-            metrics: model.metrics
+            metrics: model.metrics,
+            accuracy_gate: liveModelAccuracyGate(model),
+            evaluation: model.evaluation ?? null
           }
         : null
     };

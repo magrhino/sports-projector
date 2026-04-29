@@ -20,6 +20,7 @@
     "mcp": "node node_modules/tsx/dist/cli.mjs src/index.ts",
     "web": "node node_modules/tsx/dist/cli.mjs src/http/index.ts",
     "train:live": "node node_modules/tsx/dist/cli.mjs src/nba/live-train.ts",
+    "review:live-model": "node node_modules/tsx/dist/cli.mjs src/nba/live-model-review.ts",
     "build": "npm run build:web && npm run build:server",
     "build:server": "node node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "build:web": "node node_modules/typescript/lib/tsc.js -p web/tsconfig.json && node node_modules/vite/bin/vite.js build --config web/vite.config.ts",

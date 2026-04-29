@@ -258,22 +258,29 @@ describe("LiveNbaTracker", () => {
     }
   });
 
-  it("does not persist learned tracker corrections when live enhancements are disabled", async () => {
-    const enabledSnapshot = await latestTrackerSnapshotWithEnhancements(true);
-    const disabledSnapshot = await latestTrackerSnapshotWithEnhancements(false);
+  it("persists learned tracker corrections only when enhancements and the accuracy gate are enabled", async () => {
+    const enabledSnapshot = await latestTrackerSnapshotWithEnhancements(true, true);
+    const disabledSnapshot = await latestTrackerSnapshotWithEnhancements(true, false);
+    const insufficientSnapshot = await latestTrackerSnapshotWithEnhancements(false, true);
 
     expect(enabledSnapshot?.learned_projected_total).toEqual(expect.any(Number));
     expect(disabledSnapshot?.learned_projected_total).toBeNull();
+    expect(insufficientSnapshot?.learned_projected_total).toBeNull();
   });
 });
 
-async function latestTrackerSnapshotWithEnhancements(liveEnhancementsEnabled: boolean) {
+async function latestTrackerSnapshotWithEnhancements(passedGate: boolean, liveEnhancementsEnabled: boolean) {
   const { store, cleanup } = createStore();
   try {
-    seedTrainableSnapshots(store, 2);
-    store.trainLatestModel(2);
+    if (passedGate) {
+      seedPassingLiveModelSnapshots(store, 100);
+      store.trainLatestModel(50);
+    } else {
+      seedTrainableSnapshots(store, 2);
+      store.trainLatestModel(2);
+    }
     const tracker = new LiveNbaTracker(
-      { ...config(store), minSnapshots: 2 },
+      { ...config(store), minSnapshots: passedGate ? 50 : 2 },
       store,
       espnClientDouble(),
       kalshiClientDouble(),
@@ -325,6 +332,31 @@ function seedTrainableSnapshots(store: LiveTrackingStore, count: number): void {
     status_state: "post",
     finalized_at: "2026-04-26T02:00:00Z"
   });
+}
+
+function seedPassingLiveModelSnapshots(store: LiveTrackingStore, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    const eventId = `accuracy-${index}`;
+    store.recordProjectionSnapshot({
+      trigger: "tracker",
+      payload: projectionPayload({
+        eventId,
+        homeScore: 80,
+        awayScore: 78,
+        projectedTotal: 200,
+        clock: "9:25",
+        elapsedMinutes: 38.58,
+        minutesLeft: 9.42
+      })
+    });
+    store.upsertGame({
+      event_id: eventId,
+      final_home_score: 104,
+      final_away_score: 102,
+      status_state: "post",
+      finalized_at: "2026-04-26T02:00:00Z"
+    });
+  }
 }
 
 function config(store: LiveTrackingStore): LiveTrackingConfig {

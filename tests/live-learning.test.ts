@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateLiveModel,
+  isLiveModelAccuracyGatePassed,
   predictLearnedProjection,
+  reviewDataSources,
   trainLiveModel,
   type LiveModelArtifact,
   type LiveTrainingRow
@@ -26,6 +29,69 @@ describe("NBA live learned projection calibration", () => {
       effective_sample_count: 4
     });
     expect(model.validation_count).toBeGreaterThan(0);
+    expect(model.accuracy_gate.status).toBe("insufficient_data");
+    expect(model.accuracy_gate.reasons).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Need at least 5 validation games/)])
+    );
+  });
+
+  it("passes the accuracy gate when learned corrections improve held-out total and margin MAE", () => {
+    const model = trainLiveModel(accuracyRows({ count: 100, totalDelta: 6, marginDelta: 2 }), 50);
+
+    expect(model.accuracy_gate.status).toBe("passed");
+    expect(isLiveModelAccuracyGatePassed(model)).toBe(true);
+    expect(model.evaluation.validation_game_count).toBe(20);
+    expect(model.evaluation.effective_validation_snapshot_count).toBe(20);
+    expect(model.evaluation.improvement.mae_total).toBeGreaterThanOrEqual(0.25);
+    expect(model.evaluation.improvement.mae_margin).toBeGreaterThanOrEqual(0.25);
+    expect(model.evaluation.data_sources[0]).toMatchObject({
+      source: "local_live_tracking_snapshots",
+      quality: "primary",
+      status: "used",
+      included_in_accuracy_gate: true
+    });
+  });
+
+  it("fails the accuracy gate when learned corrections do not improve held-out accuracy", () => {
+    const model = trainLiveModel(accuracyRows({ count: 100, totalDelta: 0, marginDelta: 0 }), 50);
+
+    expect(model.accuracy_gate.status).toBe("failed");
+    expect(isLiveModelAccuracyGatePassed(model)).toBe(false);
+    expect(model.accuracy_gate.reasons).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Total MAE improvement/), expect.stringMatching(/Margin MAE improvement/)])
+    );
+  });
+
+  it("evaluates a stored model against local snapshots without changing the stored gate", () => {
+    const model = trainLiveModel(accuracyRows({ count: 100, totalDelta: 6, marginDelta: 2 }), 50);
+    const review = evaluateLiveModel(model, accuracyRows({ count: 8, totalDelta: 6, marginDelta: 2 }));
+
+    expect(review.source).toBe("local_snapshot_review");
+    expect(review.validation_snapshot_count).toBe(8);
+    expect(review.baseline.mae_total).toBeGreaterThan(review.learned.mae_total ?? Number.POSITIVE_INFINITY);
+  });
+
+  it("labels historical mid-game backfill sources as supplemental when local coverage is thin", () => {
+    expect(reviewDataSources(0, 50)).toEqual([
+      expect.objectContaining({
+        source: "local_live_tracking_snapshots",
+        quality: "primary",
+        status: "missing",
+        included_in_accuracy_gate: true
+      }),
+      expect.objectContaining({
+        source: "kalshi_game_stats_historical_backfill",
+        quality: "supplemental",
+        status: "requires_event_ids",
+        included_in_accuracy_gate: false
+      }),
+      expect.objectContaining({
+        source: "espn_period_linescore_backfill",
+        quality: "low",
+        status: "requires_event_ids",
+        included_in_accuracy_gate: false
+      })
+    ]);
   });
 
   it("skips learned corrections when comparable game coverage is thin", () => {
@@ -87,6 +153,37 @@ function fixedCorrectionModel(input: {
       train_mae_margin: 0,
       validation_mae_total: 0,
       validation_mae_margin: 0
+    },
+    evaluation: {
+      source: "heldout_validation",
+      data_sources: reviewDataSources(100, 50),
+      validation_game_count: 20,
+      validation_snapshot_count: 20,
+      effective_validation_snapshot_count: 20,
+      baseline: {
+        mae_total: 1,
+        mae_margin: 1
+      },
+      learned: {
+        mae_total: 0,
+        mae_margin: 0
+      },
+      improvement: {
+        mae_total: 1,
+        mae_margin: 1,
+        total_fraction: 1,
+        margin_fraction: 1
+      },
+      buckets: []
+    },
+    accuracy_gate: {
+      status: "passed",
+      reasons: [],
+      min_validation_games: 5,
+      min_effective_validation_snapshots: 20,
+      required_improvement_points: 0.25,
+      required_improvement_fraction: 0.02,
+      max_bucket_regression_mae: 1
     }
   };
 }
@@ -153,4 +250,36 @@ function trainingRow(input: { eventId: string; finalTotal: number }): LiveTraini
     final_home_score: finalHomeScore,
     final_away_score: input.finalTotal - finalHomeScore
   };
+}
+
+function accuracyRows(input: { count: number; totalDelta: number; marginDelta: number }): LiveTrainingRow[] {
+  return Array.from({ length: input.count }, (_, index) => {
+    const projectedHomeScore = 100;
+    const projectedAwayScore = 100;
+    const finalTotal = projectedHomeScore + projectedAwayScore + input.totalDelta;
+    const finalMargin = projectedHomeScore - projectedAwayScore + input.marginDelta;
+    return {
+      event_id: `accuracy-game-${index}`,
+      period: 4,
+      clock: "9:25",
+      current_home_score: 80,
+      current_away_score: 78,
+      projected_home_score: projectedHomeScore,
+      projected_away_score: projectedAwayScore,
+      projected_total: projectedHomeScore + projectedAwayScore,
+      projected_home_margin: projectedHomeScore - projectedAwayScore,
+      market_total_line: 203,
+      difference_vs_market: -3,
+      elapsed_minutes: 38.58,
+      minutes_left: 9.42,
+      margin: 2,
+      full_game_rate: 4.17,
+      prior_rate: 4.23,
+      recent_rate: 4.17,
+      blended_rate: 4.2,
+      p_over: 0.5,
+      final_home_score: (finalTotal + finalMargin) / 2,
+      final_away_score: (finalTotal - finalMargin) / 2
+    };
+  });
 }

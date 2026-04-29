@@ -16,7 +16,9 @@ try {
         sample_count: result.model.sample_count,
         game_count: result.model.game_count,
         effective_sample_count: result.model.effective_sample_count,
-        metrics: result.model.metrics
+        metrics: result.model.metrics,
+        accuracy_gate: result.model.accuracy_gate,
+        evaluation: result.model.evaluation
       },
       null,
       2

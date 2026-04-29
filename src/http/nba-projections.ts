@@ -7,7 +7,7 @@ import { nowIso } from "../lib/response.js";
 import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
 import { EventIdSchema } from "../lib/validation.js";
 import { HistoricalProjectionClient, type HistoricalProjectionInput } from "../nba/historical-client.js";
-import { predictLearnedProjection } from "../nba/live-learning.js";
+import { isLiveModelAccuracyGatePassed, predictLearnedProjection } from "../nba/live-learning.js";
 import type { LiveTrackingStore } from "../nba/live-tracking-store.js";
 import { projectNbaLiveScore } from "../nba/live-tool.js";
 
@@ -163,7 +163,7 @@ async function projectLiveSection(
     );
     if ((data.live_projection.data_quality as { status?: unknown } | undefined)?.status === "live") {
       const model = liveTrackingStore?.loadLatestModel();
-      if (model && liveEnhancementsEnabled(settingsStore)) {
+      if (model && isLiveModelAccuracyGatePassed(model) && liveEnhancementsEnabled(settingsStore)) {
         const learnedProjection = predictLearnedProjection(model, data);
         if (learnedProjection) {
           data.live_projection.learned_projection = learnedProjection;

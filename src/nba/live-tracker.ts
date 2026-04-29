@@ -7,7 +7,7 @@ import {
 } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
 import { DEFAULT_SETTINGS, type SportsProjectorSettings } from "../lib/settings.js";
-import { predictLearnedProjection } from "./live-learning.js";
+import { isLiveModelAccuracyGatePassed, predictLearnedProjection } from "./live-learning.js";
 import { projectNbaLiveScore } from "./live-tool.js";
 import { type LiveTrackingConfig, LiveTrackingStore } from "./live-tracking-store.js";
 
@@ -92,7 +92,7 @@ export class LiveNbaTracker {
   private async trackEvent(eventId: string): Promise<void> {
     const model = this.store.loadLatestModel();
     const projection = await projectNbaLiveScore({ event_id: eventId, include_debug: true }, this.espnClient, this.kalshiClient);
-    if (model && this.readSettings().live_enhancements_enabled) {
+    if (model && isLiveModelAccuracyGatePassed(model) && this.readSettings().live_enhancements_enabled) {
       const learnedProjection = predictLearnedProjection(model, projection);
       if (learnedProjection) {
         projection.live_projection.learned_projection = learnedProjection;

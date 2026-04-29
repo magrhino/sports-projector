@@ -45,12 +45,71 @@ export interface LiveModelArtifact {
     validation_mae_total: number | null;
     validation_mae_margin: number | null;
   };
+  evaluation: LiveModelEvaluation;
+  accuracy_gate: LiveModelAccuracyGate;
 }
 
 export interface LiveModelBucketCoverage {
   sample_count: number;
   game_count: number;
   effective_sample_count: number;
+}
+
+export type LiveModelAccuracyGateStatus = "passed" | "failed" | "insufficient_data";
+
+export interface LiveModelAccuracyGate {
+  status: LiveModelAccuracyGateStatus;
+  reasons: string[];
+  min_validation_games: number;
+  min_effective_validation_snapshots: number;
+  required_improvement_points: number;
+  required_improvement_fraction: number;
+  max_bucket_regression_mae: number;
+}
+
+export interface LiveModelEvaluation {
+  source: "heldout_validation" | "local_snapshot_review";
+  data_sources: LiveModelReviewDataSource[];
+  validation_game_count: number;
+  validation_snapshot_count: number;
+  effective_validation_snapshot_count: number;
+  baseline: {
+    mae_total: number | null;
+    mae_margin: number | null;
+  };
+  learned: {
+    mae_total: number | null;
+    mae_margin: number | null;
+  };
+  improvement: {
+    mae_total: number | null;
+    mae_margin: number | null;
+    total_fraction: number | null;
+    margin_fraction: number | null;
+  };
+  buckets: LiveModelBucketEvaluation[];
+}
+
+export interface LiveModelBucketEvaluation {
+  bucket: string;
+  sample_count: number;
+  game_count: number;
+  baseline_mae_total: number;
+  learned_mae_total: number;
+  baseline_mae_margin: number;
+  learned_mae_margin: number;
+  total_mae_delta: number;
+  margin_mae_delta: number;
+  status: "improved" | "unchanged" | "regressed";
+}
+
+export interface LiveModelReviewDataSource {
+  source: "local_live_tracking_snapshots" | "kalshi_game_stats_historical_backfill" | "espn_period_linescore_backfill";
+  quality: "primary" | "supplemental" | "low";
+  status: "used" | "missing" | "not_needed" | "requires_event_ids";
+  included_in_accuracy_gate: boolean;
+  rows: number;
+  note: string;
 }
 
 export interface LearnedProjection {
@@ -100,6 +159,11 @@ const EPOCHS = 350;
 const LEARNING_RATE = 0.01;
 const TIME_BUCKET_MINUTES = 3;
 const MIN_COMPARABLE_GAMES = 3;
+const MIN_VALIDATION_GAMES = 5;
+const MIN_EFFECTIVE_VALIDATION_SNAPSHOTS = 20;
+const REQUIRED_IMPROVEMENT_POINTS = 0.25;
+const REQUIRED_IMPROVEMENT_FRACTION = 0.02;
+const MAX_BUCKET_REGRESSION_MAE = 1;
 
 interface TrainingExample {
   row: LiveTrainingRow;
@@ -141,8 +205,7 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
 
   const trainMetrics = metrics(parameters, normalizedTrain);
   const validationMetrics = normalizedValidation.length > 0 ? metrics(parameters, normalizedValidation) : null;
-
-  return {
+  const model: LiveModelArtifact = {
     version: 1,
     trained_at: new Date().toISOString(),
     sample_count: examples.length,
@@ -164,7 +227,17 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
       train_mae_margin: roundMetric(trainMetrics.margin),
       validation_mae_total: validationMetrics ? roundMetric(validationMetrics.total) : null,
       validation_mae_margin: validationMetrics ? roundMetric(validationMetrics.margin) : null
-    }
+    },
+    evaluation: emptyEvaluation("heldout_validation", reviewDataSources(0, minSnapshots)),
+    accuracy_gate: defaultAccuracyGate("insufficient_data", ["Model has not been evaluated."])
+  };
+
+  const evaluation = evaluateExamples(model, validationExamples, "heldout_validation", reviewDataSources(examples.length, minSnapshots));
+  const accuracyGate = accuracyGateForEvaluation(evaluation);
+  return {
+    ...model,
+    evaluation,
+    accuracy_gate: accuracyGate
   };
 }
 
@@ -174,11 +247,76 @@ export function predictLearnedProjection(model: LiveModelArtifact, projectionDat
     return null;
   }
 
+  return predictLearnedFromRow(model, row);
+}
+
+export function evaluateLiveModel(model: LiveModelArtifact, rows: LiveTrainingRow[]): LiveModelEvaluation {
+  const examples = rows
+    .map((row) => toTrainingExample(row))
+    .filter((example): example is TrainingExample => example !== null);
+  return evaluateExamples(
+    model,
+    downsampleExamples(examples),
+    "local_snapshot_review",
+    reviewDataSources(examples.length, model.sample_count)
+  );
+}
+
+export function isLiveModelAccuracyGatePassed(model: Partial<LiveModelArtifact> | null | undefined): boolean {
+  return model?.accuracy_gate?.status === "passed";
+}
+
+export function liveModelAccuracyGate(model: Partial<LiveModelArtifact> | null | undefined): LiveModelAccuracyGate {
+  return (
+    model?.accuracy_gate ??
+    defaultAccuracyGate("insufficient_data", ["Model artifact has no accuracy gate; retrain it before applying learned corrections."])
+  );
+}
+
+export function reviewDataSources(localRows: number, requiredRows: number): LiveModelReviewDataSource[] {
+  const localStatus = localRows > 0 ? "used" : "missing";
+  const localReady = localRows >= requiredRows;
+  return [
+    {
+      source: "local_live_tracking_snapshots",
+      quality: "primary",
+      status: localStatus,
+      included_in_accuracy_gate: true,
+      rows: localRows,
+      note: "Captured live snapshots preserve the heuristic projection, score, clock, market context, and final result."
+    },
+    {
+      source: "kalshi_game_stats_historical_backfill",
+      quality: "supplemental",
+      status: localReady ? "not_needed" : "requires_event_ids",
+      included_in_accuracy_gate: false,
+      rows: 0,
+      note: "Supplemental reconstruction can use public Kalshi game_stats play-by-play when event or milestone ids are supplied."
+    },
+    {
+      source: "espn_period_linescore_backfill",
+      quality: "low",
+      status: localReady ? "not_needed" : "requires_event_ids",
+      included_in_accuracy_gate: false,
+      rows: 0,
+      note: "ESPN completed-game period linescores can provide lower-quality period-end checkpoints only."
+    }
+  ];
+}
+
+function predictLearnedFromRow(model: LiveModelArtifact, row: Partial<LiveTrainingRow>): LearnedProjection | null {
+  if (row.projected_total === null || row.projected_total === undefined) {
+    return null;
+  }
+  if (row.projected_home_margin === null || row.projected_home_margin === undefined) {
+    return null;
+  }
+
   const features = FEATURE_COLUMNS.map((column) => featureValue(row, column));
   const normalized = features.map((value, index) => (value - model.input_mean[index]) / model.input_std[index]);
   const [rawTotalCorrection, rawMarginCorrection] = forward(model, normalized);
-  const heuristicTotal = row.projected_total as number;
-  const heuristicMargin = row.projected_home_margin as number;
+  const heuristicTotal = row.projected_total;
+  const heuristicMargin = row.projected_home_margin;
   const currentHome = row.current_home_score ?? 0;
   const currentAway = row.current_away_score ?? 0;
   const bucket = projectionBucket(row);
@@ -287,6 +425,221 @@ function toTrainingExample(row: LiveTrainingRow): TrainingExample | null {
     features: FEATURE_COLUMNS.map((column) => featureValue(row, column)),
     targets: [finalTotal - row.projected_total, finalMargin - row.projected_home_margin]
   };
+}
+
+function evaluateExamples(
+  model: LiveModelArtifact,
+  examples: TrainingExample[],
+  source: LiveModelEvaluation["source"],
+  dataSources: LiveModelReviewDataSource[]
+): LiveModelEvaluation {
+  if (examples.length === 0) {
+    return emptyEvaluation(source, dataSources);
+  }
+
+  const evaluated = examples
+    .map((example) => evaluatedExample(model, example))
+    .filter((example): example is EvaluatedExample => example !== null);
+  if (evaluated.length === 0) {
+    return emptyEvaluation(source, dataSources);
+  }
+
+  const baselineTotal = mae(evaluated.map((example) => example.baselineTotalError));
+  const baselineMargin = mae(evaluated.map((example) => example.baselineMarginError));
+  const learnedTotal = mae(evaluated.map((example) => example.learnedTotalError));
+  const learnedMargin = mae(evaluated.map((example) => example.learnedMarginError));
+  return {
+    source,
+    data_sources: dataSources,
+    validation_game_count: distinctCount(evaluated.map((example) => example.eventId)),
+    validation_snapshot_count: evaluated.length,
+    effective_validation_snapshot_count: evaluated.length,
+    baseline: {
+      mae_total: roundMetric(baselineTotal),
+      mae_margin: roundMetric(baselineMargin)
+    },
+    learned: {
+      mae_total: roundMetric(learnedTotal),
+      mae_margin: roundMetric(learnedMargin)
+    },
+    improvement: {
+      mae_total: roundMetric(baselineTotal - learnedTotal),
+      mae_margin: roundMetric(baselineMargin - learnedMargin),
+      total_fraction: improvementFraction(baselineTotal, learnedTotal),
+      margin_fraction: improvementFraction(baselineMargin, learnedMargin)
+    },
+    buckets: bucketEvaluations(evaluated)
+  };
+}
+
+interface EvaluatedExample {
+  eventId: string;
+  bucket: string;
+  baselineTotalError: number;
+  learnedTotalError: number;
+  baselineMarginError: number;
+  learnedMarginError: number;
+}
+
+function evaluatedExample(model: LiveModelArtifact, example: TrainingExample): EvaluatedExample | null {
+  const learned = predictLearnedFromRow(model, example.row);
+  if (!learned) {
+    return null;
+  }
+
+  const finalTotal = example.row.final_home_score + example.row.final_away_score;
+  const finalMargin = example.row.final_home_score - example.row.final_away_score;
+  return {
+    eventId: example.eventId,
+    bucket: example.bucket,
+    baselineTotalError: Math.abs(example.targets[0]),
+    learnedTotalError: Math.abs(finalTotal - learned.projected_total),
+    baselineMarginError: Math.abs(example.targets[1]),
+    learnedMarginError: Math.abs(finalMargin - learned.projected_home_margin)
+  };
+}
+
+function bucketEvaluations(examples: EvaluatedExample[]): LiveModelBucketEvaluation[] {
+  const buckets = new Map<string, EvaluatedExample[]>();
+  for (const example of examples) {
+    const bucket = buckets.get(example.bucket) ?? [];
+    bucket.push(example);
+    buckets.set(example.bucket, bucket);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([bucket, bucketExamples]) => {
+      const baselineTotal = mae(bucketExamples.map((example) => example.baselineTotalError));
+      const learnedTotal = mae(bucketExamples.map((example) => example.learnedTotalError));
+      const baselineMargin = mae(bucketExamples.map((example) => example.baselineMarginError));
+      const learnedMargin = mae(bucketExamples.map((example) => example.learnedMarginError));
+      const totalDelta = learnedTotal - baselineTotal;
+      const marginDelta = learnedMargin - baselineMargin;
+      const status: LiveModelBucketEvaluation["status"] =
+        totalDelta > MAX_BUCKET_REGRESSION_MAE || marginDelta > MAX_BUCKET_REGRESSION_MAE
+          ? "regressed"
+          : totalDelta < 0 || marginDelta < 0
+            ? "improved"
+            : "unchanged";
+      return {
+        bucket,
+        sample_count: bucketExamples.length,
+        game_count: distinctCount(bucketExamples.map((example) => example.eventId)),
+        baseline_mae_total: roundMetric(baselineTotal),
+        learned_mae_total: roundMetric(learnedTotal),
+        baseline_mae_margin: roundMetric(baselineMargin),
+        learned_mae_margin: roundMetric(learnedMargin),
+        total_mae_delta: roundMetric(totalDelta),
+        margin_mae_delta: roundMetric(marginDelta),
+        status
+      };
+    })
+    .sort((left, right) => left.bucket.localeCompare(right.bucket));
+}
+
+function accuracyGateForEvaluation(evaluation: LiveModelEvaluation): LiveModelAccuracyGate {
+  const insufficientReasons: string[] = [];
+  if (evaluation.validation_game_count < MIN_VALIDATION_GAMES) {
+    insufficientReasons.push(
+      `Need at least ${MIN_VALIDATION_GAMES} validation games; found ${evaluation.validation_game_count}.`
+    );
+  }
+  if (evaluation.effective_validation_snapshot_count < MIN_EFFECTIVE_VALIDATION_SNAPSHOTS) {
+    insufficientReasons.push(
+      `Need at least ${MIN_EFFECTIVE_VALIDATION_SNAPSHOTS} effective validation snapshots; found ${evaluation.effective_validation_snapshot_count}.`
+    );
+  }
+  if (evaluation.baseline.mae_total === null || evaluation.baseline.mae_margin === null) {
+    insufficientReasons.push("No comparable validation projections were available.");
+  }
+  if (insufficientReasons.length > 0) {
+    return defaultAccuracyGate("insufficient_data", insufficientReasons);
+  }
+
+  const reasons: string[] = [];
+  const requiredTotal = requiredImprovement(evaluation.baseline.mae_total ?? 0);
+  const requiredMargin = requiredImprovement(evaluation.baseline.mae_margin ?? 0);
+  if ((evaluation.improvement.mae_total ?? 0) < requiredTotal) {
+    reasons.push(
+      `Total MAE improvement ${evaluation.improvement.mae_total} did not meet required ${roundMetric(requiredTotal)}.`
+    );
+  }
+  if ((evaluation.improvement.mae_margin ?? 0) < requiredMargin) {
+    reasons.push(
+      `Margin MAE improvement ${evaluation.improvement.mae_margin} did not meet required ${roundMetric(requiredMargin)}.`
+    );
+  }
+
+  const regressedBuckets = evaluation.buckets.filter(
+    (bucket) =>
+      bucket.game_count >= MIN_COMPARABLE_GAMES &&
+      (bucket.total_mae_delta > MAX_BUCKET_REGRESSION_MAE || bucket.margin_mae_delta > MAX_BUCKET_REGRESSION_MAE)
+  );
+  for (const bucket of regressedBuckets) {
+    reasons.push(
+      `Bucket ${bucket.bucket} regressed by total ${bucket.total_mae_delta} and margin ${bucket.margin_mae_delta} MAE points.`
+    );
+  }
+
+  return defaultAccuracyGate(reasons.length > 0 ? "failed" : "passed", reasons);
+}
+
+function emptyEvaluation(
+  source: LiveModelEvaluation["source"],
+  dataSources: LiveModelReviewDataSource[]
+): LiveModelEvaluation {
+  return {
+    source,
+    data_sources: dataSources,
+    validation_game_count: 0,
+    validation_snapshot_count: 0,
+    effective_validation_snapshot_count: 0,
+    baseline: {
+      mae_total: null,
+      mae_margin: null
+    },
+    learned: {
+      mae_total: null,
+      mae_margin: null
+    },
+    improvement: {
+      mae_total: null,
+      mae_margin: null,
+      total_fraction: null,
+      margin_fraction: null
+    },
+    buckets: []
+  };
+}
+
+function defaultAccuracyGate(status: LiveModelAccuracyGateStatus, reasons: string[]): LiveModelAccuracyGate {
+  return {
+    status,
+    reasons,
+    min_validation_games: MIN_VALIDATION_GAMES,
+    min_effective_validation_snapshots: MIN_EFFECTIVE_VALIDATION_SNAPSHOTS,
+    required_improvement_points: REQUIRED_IMPROVEMENT_POINTS,
+    required_improvement_fraction: REQUIRED_IMPROVEMENT_FRACTION,
+    max_bucket_regression_mae: MAX_BUCKET_REGRESSION_MAE
+  };
+}
+
+function mae(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function improvementFraction(baseline: number, learned: number): number | null {
+  if (baseline <= 0) {
+    return null;
+  }
+  return roundMetric((baseline - learned) / baseline);
+}
+
+function requiredImprovement(baseline: number): number {
+  return Math.max(REQUIRED_IMPROVEMENT_POINTS, baseline * REQUIRED_IMPROVEMENT_FRACTION);
 }
 
 function featureValue(row: Partial<LiveTrainingRow>, column: string): number {

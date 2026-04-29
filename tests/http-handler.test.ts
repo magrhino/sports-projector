@@ -472,6 +472,32 @@ describe("createHttpHandler", () => {
       cleanupSettings();
     }
   });
+
+  it("skips learned live corrections when the latest model has not passed accuracy review", async () => {
+    const context = createLiveTrackingContext();
+    const { store: settingsStore, cleanup: cleanupSettings } = createSettingsStore();
+    seedInsufficientLiveModel(context.store);
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+          kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+          liveTrackingContext: context,
+          settingsStore
+        }),
+        "/api/nba/projections?event_id=401&scope=live"
+      );
+
+      const payload = JSON.parse(response.body) as ProjectionResponse;
+      expect(response.statusCode).toBe(200);
+      expect(context.store.status(true).model?.accuracy_gate.status).toBe("insufficient_data");
+      expect(payload.live_projection.data?.live_projection.learned_projection).toBeUndefined();
+    } finally {
+      context.store.close();
+      context.cleanup();
+      cleanupSettings();
+    }
+  });
 });
 
 async function callHandler(
@@ -546,10 +572,84 @@ function createHistoricalRefreshContext(): HistoricalRefreshHttpContext {
 }
 
 function seedLiveModel(store: LiveTrackingStore): void {
+  for (let index = 0; index < 100; index += 1) {
+    const eventId = `accuracy-${index}`;
+    store.recordProjectionSnapshot({
+      trigger: "tracker",
+      payload: {
+        event_id: eventId,
+        teams: {
+          home: { id: "2", name: "Boston Celtics", abbreviation: "BOS", score: 83 },
+          away: { id: "18", name: "New York Knicks", abbreviation: "NY", score: 78 }
+        },
+        game_status: {
+          state: "in",
+          description: "In Progress",
+          detail: "9:25 - 4th Quarter",
+          completed: false,
+          period: 4,
+          clock: "9:25"
+        },
+        live_projection: {
+          projected_home_score: 104,
+          projected_away_score: 98,
+          projected_total: 202,
+          projected_remaining_points: 41,
+          market_total_line: 203,
+          difference_vs_market: -1,
+          p_over: 0.5,
+          relationship_to_market: "near_market",
+          model_inputs: {
+            current_home_score: 83,
+            current_away_score: 78,
+            period: 4,
+            clock: "9:25",
+            recent_points: null,
+            recent_minutes: null,
+            home_fouls_period: null,
+            away_fouls_period: null,
+            is_playoffs: true
+          },
+          data_quality: {
+            status: "live",
+            market_line_source: "auto_search",
+            selected_market_ticker: "KXNBA-CELNYK-TOTAL-203"
+          },
+          debug: {
+            selected_market: {
+              market: marketFixture("KXNBA-CELNYK-TOTAL-203", 203),
+              line: 203
+            },
+            model_details: {
+              elapsed_minutes: 38.58,
+              minutes_left: 9.42,
+              margin: 5,
+              full_game_rate: 4.17,
+              prior_rate: 4.23,
+              recent_rate: 4.17,
+              blended_rate: 4.2
+            }
+          },
+          source_urls: {}
+        }
+      }
+    });
+    store.upsertGame({
+      event_id: eventId,
+      final_home_score: 108,
+      final_away_score: 100,
+      status_state: "post",
+      finalized_at: "2026-04-26T02:00:00Z"
+    });
+  }
+  store.trainLatestModel(50);
+}
+
+function seedInsufficientLiveModel(store: LiveTrackingStore): void {
   store.recordProjectionSnapshot({
     trigger: "tracker",
     payload: {
-      event_id: "401",
+      event_id: "thin-model",
       teams: {
         home: { id: "2", name: "Boston Celtics", abbreviation: "BOS", score: 83 },
         away: { id: "18", name: "New York Knicks", abbreviation: "NY", score: 78 }
@@ -607,7 +707,7 @@ function seedLiveModel(store: LiveTrackingStore): void {
     }
   });
   store.upsertGame({
-    event_id: "401",
+    event_id: "thin-model",
     final_home_score: 101,
     final_away_score: 99,
     status_state: "post",
