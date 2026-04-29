@@ -14,7 +14,15 @@ describe("LiveTrackingStore", () => {
     const { store, cleanup } = createStore();
     try {
       const first = projectionPayload({ eventId: "401", homeScore: 83, awayScore: 78, projectedTotal: 202 });
-      const second = projectionPayload({ eventId: "401", homeScore: 90, awayScore: 88, projectedTotal: 214 });
+      const second = projectionPayload({
+        eventId: "401",
+        homeScore: 90,
+        awayScore: 88,
+        projectedTotal: 214,
+        clock: "8:25",
+        elapsedMinutes: 39.58,
+        minutesLeft: 8.42
+      });
       store.recordProjectionSnapshot({ trigger: "tracker", payload: first });
       store.recordProjectionSnapshot({ trigger: "tracker", payload: second });
       store.upsertGame({
@@ -296,13 +304,17 @@ function createStore(): { store: LiveTrackingStore; cleanup: () => void } {
 
 function seedTrainableSnapshots(store: LiveTrackingStore, count: number): void {
   for (let index = 0; index < count; index += 1) {
+    const minutesLeft = Math.max(0.42, 9.42 - index * 3);
     store.recordProjectionSnapshot({
       trigger: "tracker",
       payload: projectionPayload({
         eventId: "401",
         homeScore: 80 + index,
         awayScore: 78 + index,
-        projectedTotal: 202 + index
+        projectedTotal: 202 + index,
+        clock: `${Math.floor(minutesLeft)}:25`,
+        elapsedMinutes: 48 - minutesLeft,
+        minutesLeft
       })
     });
   }
@@ -386,9 +398,17 @@ function projectionPayload(input: {
   projectedTotal: number;
   state?: string;
   completed?: boolean;
+  period?: number;
+  clock?: string;
+  elapsedMinutes?: number;
+  minutesLeft?: number;
 }) {
   const state = input.state ?? "in";
   const completed = input.completed ?? false;
+  const period = input.period ?? 4;
+  const clock = input.clock ?? "9:25";
+  const elapsedMinutes = input.elapsedMinutes ?? 38.58;
+  const minutesLeft = input.minutesLeft ?? 9.42;
   return {
     event_id: input.eventId,
     teams: {
@@ -398,10 +418,10 @@ function projectionPayload(input: {
     game_status: {
       state,
       description: completed ? "Final" : state === "pre" ? "Scheduled" : "In Progress",
-      detail: completed ? "Final" : state === "pre" ? "7:00 PM" : "9:25 - 4th Quarter",
+      detail: completed ? "Final" : state === "pre" ? "7:00 PM" : `${clock} - ${period}th Quarter`,
       completed,
-      period: 4,
-      clock: completed ? "0.0" : "9:25"
+      period,
+      clock: completed ? "0.0" : clock
     },
     live_projection: {
       projected_home_score: Math.round(input.projectedTotal / 2 + 3),
@@ -415,8 +435,8 @@ function projectionPayload(input: {
       model_inputs: {
         current_home_score: input.homeScore,
         current_away_score: input.awayScore,
-        period: 4,
-        clock: "9:25",
+        period,
+        clock,
         recent_points: null,
         recent_minutes: null,
         home_fouls_period: null,
@@ -433,8 +453,8 @@ function projectionPayload(input: {
           line: 203
         },
         model_details: {
-          elapsed_minutes: 38.58,
-          minutes_left: 9.42,
+          elapsed_minutes: elapsedMinutes,
+          minutes_left: minutesLeft,
           margin: Math.abs(input.homeScore - input.awayScore),
           full_game_rate: 4.17,
           prior_rate: 4.23,

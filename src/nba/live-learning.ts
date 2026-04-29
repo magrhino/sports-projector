@@ -26,9 +26,12 @@ export interface LiveModelArtifact {
   version: 1;
   trained_at: string;
   sample_count: number;
+  game_count: number;
+  effective_sample_count: number;
   train_count: number;
   validation_count: number;
   feature_columns: string[];
+  bucket_coverage: Record<string, LiveModelBucketCoverage>;
   hidden_size: number;
   input_mean: number[];
   input_std: number[];
@@ -44,6 +47,12 @@ export interface LiveModelArtifact {
   };
 }
 
+export interface LiveModelBucketCoverage {
+  sample_count: number;
+  game_count: number;
+  effective_sample_count: number;
+}
+
 export interface LearnedProjection {
   projected_home_score: number;
   projected_away_score: number;
@@ -51,9 +60,19 @@ export interface LearnedProjection {
   projected_home_margin: number;
   total_residual_correction: number;
   margin_residual_correction: number;
+  raw_total_residual_correction: number;
+  raw_margin_residual_correction: number;
+  correction_cap: number;
+  adjustment_status: "applied" | "clipped" | "skipped_low_coverage";
+  warning: string | null;
   model_version: number;
   trained_at: string;
   sample_count: number;
+  game_count: number | null;
+  effective_sample_count: number | null;
+  comparable_bucket: string;
+  comparable_game_count: number;
+  comparable_sample_count: number;
 }
 
 const FEATURE_COLUMNS = [
@@ -79,8 +98,13 @@ const DEFAULT_HIDDEN_SIZE = 8;
 const TRAIN_FRACTION = 0.8;
 const EPOCHS = 350;
 const LEARNING_RATE = 0.01;
+const TIME_BUCKET_MINUTES = 3;
+const MIN_COMPARABLE_GAMES = 3;
 
 interface TrainingExample {
+  row: LiveTrainingRow;
+  eventId: string;
+  bucket: string;
   features: number[];
   targets: [number, number];
 }
@@ -93,9 +117,16 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
     throw new Error(`Need at least ${minSnapshots} finalized live snapshots to train; found ${examples.length}.`);
   }
 
-  const trainCount = Math.max(1, Math.floor(examples.length * TRAIN_FRACTION));
-  const trainExamples = examples.slice(0, trainCount);
-  const validationExamples = examples.slice(trainCount);
+  const effectiveExamples = downsampleExamples(examples);
+  if (effectiveExamples.length < minSnapshots) {
+    throw new Error(
+      `Need at least ${minSnapshots} game/time-bucket snapshots to train; found ${effectiveExamples.length}.`
+    );
+  }
+
+  const split = splitExamplesByGame(effectiveExamples);
+  const trainExamples = split.train;
+  const validationExamples = split.validation;
   const normalization = normalizeExamples(trainExamples);
   const normalizedTrain = applyNormalization(trainExamples, normalization);
   const normalizedValidation = applyNormalization(validationExamples, normalization);
@@ -115,9 +146,12 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
     version: 1,
     trained_at: new Date().toISOString(),
     sample_count: examples.length,
+    game_count: distinctCount(examples.map((example) => example.eventId)),
+    effective_sample_count: effectiveExamples.length,
     train_count: normalizedTrain.length,
     validation_count: normalizedValidation.length,
     feature_columns: FEATURE_COLUMNS,
+    bucket_coverage: bucketCoverage(examples, effectiveExamples),
     hidden_size: hiddenSize,
     input_mean: normalization.mean,
     input_std: normalization.std,
@@ -142,16 +176,30 @@ export function predictLearnedProjection(model: LiveModelArtifact, projectionDat
 
   const features = FEATURE_COLUMNS.map((column) => featureValue(row, column));
   const normalized = features.map((value, index) => (value - model.input_mean[index]) / model.input_std[index]);
-  const [totalCorrection, marginCorrection] = forward(model, normalized);
+  const [rawTotalCorrection, rawMarginCorrection] = forward(model, normalized);
   const heuristicTotal = row.projected_total as number;
   const heuristicMargin = row.projected_home_margin as number;
   const currentHome = row.current_home_score ?? 0;
   const currentAway = row.current_away_score ?? 0;
+  const bucket = projectionBucket(row);
+  const coverage = model.bucket_coverage?.[bucket] ?? null;
+  const comparableGameCount = coverage?.game_count ?? 0;
+  const comparableSampleCount = coverage?.sample_count ?? 0;
+  const correctionCap = totalCorrectionCap(row.minutes_left ?? null);
+  const marginCap = marginCorrectionCap(row.minutes_left ?? null);
+  const coverageIsThin = comparableGameCount < MIN_COMPARABLE_GAMES;
+  const clippedTotalCorrection = clamp(rawTotalCorrection, -correctionCap, correctionCap);
+  const clippedMarginCorrection = clamp(rawMarginCorrection, -marginCap, marginCap);
+  const wasClipped =
+    clippedTotalCorrection !== rawTotalCorrection || clippedMarginCorrection !== rawMarginCorrection;
+  const totalCorrection = coverageIsThin ? 0 : clippedTotalCorrection;
+  const marginCorrection = coverageIsThin ? 0 : clippedMarginCorrection;
   const projectedTotal = Math.max(currentHome + currentAway, heuristicTotal + totalCorrection);
   const projectedMargin = heuristicMargin + marginCorrection;
   const homeRaw = (projectedTotal + projectedMargin) / 2;
   const home = Math.max(currentHome, Math.round(homeRaw));
   const away = Math.max(currentAway, Math.round(projectedTotal - home));
+  const adjustmentStatus = coverageIsThin ? "skipped_low_coverage" : wasClipped ? "clipped" : "applied";
 
   return {
     projected_home_score: home,
@@ -160,9 +208,24 @@ export function predictLearnedProjection(model: LiveModelArtifact, projectionDat
     projected_home_margin: roundMetric(home - away),
     total_residual_correction: roundMetric(totalCorrection),
     margin_residual_correction: roundMetric(marginCorrection),
+    raw_total_residual_correction: roundMetric(rawTotalCorrection),
+    raw_margin_residual_correction: roundMetric(rawMarginCorrection),
+    correction_cap: correctionCap,
+    adjustment_status: adjustmentStatus,
+    warning:
+      adjustmentStatus === "skipped_low_coverage"
+        ? `Learned correction skipped: ${comparableGameCount} comparable games in ${bucket}.`
+        : adjustmentStatus === "clipped"
+          ? `Learned correction clipped to ${correctionCap} points for this game phase.`
+          : null,
     model_version: model.version,
     trained_at: model.trained_at,
-    sample_count: model.sample_count
+    sample_count: model.sample_count,
+    game_count: model.game_count ?? null,
+    effective_sample_count: model.effective_sample_count ?? null,
+    comparable_bucket: bucket,
+    comparable_game_count: comparableGameCount,
+    comparable_sample_count: comparableSampleCount
   };
 }
 
@@ -218,6 +281,9 @@ function toTrainingExample(row: LiveTrainingRow): TrainingExample | null {
   const finalTotal = row.final_home_score + row.final_away_score;
   const finalMargin = row.final_home_score - row.final_away_score;
   return {
+    row,
+    eventId: row.event_id || "unknown",
+    bucket: projectionBucket(row),
     features: FEATURE_COLUMNS.map((column) => featureValue(row, column)),
     targets: [finalTotal - row.projected_total, finalMargin - row.projected_home_margin]
   };
@@ -240,6 +306,141 @@ function featureValue(row: Partial<LiveTrainingRow>, column: string): number {
   }
 }
 
+function downsampleExamples(examples: TrainingExample[]): TrainingExample[] {
+  const seen = new Set<string>();
+  const selected: TrainingExample[] = [];
+  for (const example of examples) {
+    const key = `${example.eventId}:${example.bucket}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    selected.push(example);
+  }
+  return selected;
+}
+
+function splitExamplesByGame(examples: TrainingExample[]): { train: TrainingExample[]; validation: TrainingExample[] } {
+  const gameIds = unique(examples.map((example) => example.eventId));
+  if (gameIds.length <= 1) {
+    return {
+      train: examples,
+      validation: []
+    };
+  }
+
+  const trainGameCount = Math.min(gameIds.length - 1, Math.max(1, Math.floor(gameIds.length * TRAIN_FRACTION)));
+  const trainGames = new Set(gameIds.slice(0, trainGameCount));
+  return {
+    train: examples.filter((example) => trainGames.has(example.eventId)),
+    validation: examples.filter((example) => !trainGames.has(example.eventId))
+  };
+}
+
+function bucketCoverage(
+  examples: TrainingExample[],
+  effectiveExamples: TrainingExample[]
+): Record<string, LiveModelBucketCoverage> {
+  const coverage: Record<string, { sample_count: number; games: Set<string>; effective_sample_count: number }> = {};
+  for (const example of examples) {
+    const entry = coverage[example.bucket] ?? {
+      sample_count: 0,
+      games: new Set<string>(),
+      effective_sample_count: 0
+    };
+    entry.sample_count += 1;
+    entry.games.add(example.eventId);
+    coverage[example.bucket] = entry;
+  }
+  for (const example of effectiveExamples) {
+    const entry = coverage[example.bucket];
+    if (entry) {
+      entry.effective_sample_count += 1;
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(coverage).map(([bucket, entry]) => [
+      bucket,
+      {
+        sample_count: entry.sample_count,
+        game_count: entry.games.size,
+        effective_sample_count: entry.effective_sample_count
+      }
+    ])
+  );
+}
+
+function projectionBucket(row: Partial<LiveTrainingRow>): string {
+  const period = finiteNumber(row.period) ?? periodFromMinutesLeft(row.minutes_left);
+  const minutesLeft = finiteNumber(row.minutes_left);
+  if (minutesLeft === null) {
+    return `p${period}:unknown`;
+  }
+
+  const bucketStart = Math.floor(minutesLeft / TIME_BUCKET_MINUTES) * TIME_BUCKET_MINUTES;
+  return `p${period}:m${bucketStart}-${bucketStart + TIME_BUCKET_MINUTES}`;
+}
+
+function periodFromMinutesLeft(minutesLeft: number | null | undefined): number {
+  if (typeof minutesLeft !== "number" || !Number.isFinite(minutesLeft)) {
+    return 0;
+  }
+  if (minutesLeft > 36) {
+    return 1;
+  }
+  if (minutesLeft > 24) {
+    return 2;
+  }
+  if (minutesLeft > 12) {
+    return 3;
+  }
+  if (minutesLeft > 0) {
+    return 4;
+  }
+  return 4;
+}
+
+function totalCorrectionCap(minutesLeft: number | null): number {
+  if (minutesLeft === null || minutesLeft > 36) {
+    return 4;
+  }
+  if (minutesLeft > 24) {
+    return 6;
+  }
+  if (minutesLeft > 12) {
+    return 8;
+  }
+  if (minutesLeft > 6) {
+    return 10;
+  }
+  if (minutesLeft > 2) {
+    return 12;
+  }
+  return 14;
+}
+
+function marginCorrectionCap(minutesLeft: number | null): number {
+  if (minutesLeft === null || minutesLeft > 36) {
+    return 6;
+  }
+  if (minutesLeft > 24) {
+    return 8;
+  }
+  if (minutesLeft > 12) {
+    return 10;
+  }
+  return 14;
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function distinctCount(values: string[]): number {
+  return unique(values).length;
+}
+
 function normalizeExamples(examples: TrainingExample[]): { mean: number[]; std: number[] } {
   const mean = FEATURE_COLUMNS.map((_, index) =>
     examples.reduce((sum, example) => sum + example.features[index], 0) / examples.length
@@ -257,6 +458,7 @@ function applyNormalization(
   normalization: { mean: number[]; std: number[] }
 ): TrainingExample[] {
   return examples.map((example) => ({
+    ...example,
     targets: example.targets,
     features: example.features.map((value, index) => (value - normalization.mean[index]) / normalization.std[index])
   }));
@@ -357,6 +559,10 @@ function seededRandom(seed: number): () => number {
 
 function dot(left: number[], right: number[]): number {
   return left.reduce((sum, value, index) => sum + value * right[index], 0);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

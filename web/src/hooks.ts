@@ -456,9 +456,16 @@ function trackerStatusMessage(payload: TrackerStatusPayload): string {
     latest?.market_total_line !== null && latest?.market_total_line !== undefined
       ? `latest market ${latest.market_total_line}`
       : "",
-    model ? `model ${model.sample_count} samples` : "collecting data",
+    model ? `model ${formatModelSampleLabel(model)}` : "collecting data",
     payload.last_error ? `error: ${payload.last_error}` : ""
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+function formatModelSampleLabel(model: NonNullable<NonNullable<TrackerStatusPayload["tracker"]>["model"]>): string {
+  if (typeof model.game_count === "number" && typeof model.sample_count === "number") {
+    return `${model.game_count} games / ${model.sample_count} snapshots`;
+  }
+  return `${model.sample_count ?? 0} samples`;
 }

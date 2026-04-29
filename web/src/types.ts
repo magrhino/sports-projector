@@ -79,6 +79,8 @@ export type TrackerStatusPayload = {
     model?: {
       trained_at?: string;
       sample_count?: number;
+      game_count?: number | null;
+      effective_sample_count?: number | null;
       metrics?: Record<string, unknown>;
     } | null;
     training?: {

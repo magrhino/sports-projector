@@ -236,7 +236,7 @@ function SettingsView() {
             <SettingsMetric label="Tracking" value={tracker?.enabled ? "Enabled" : "Disabled"} />
             <SettingsMetric label="Collected snapshots" value={formatCount(tracker?.snapshots)} />
             <SettingsMetric label="Trainable snapshots" value={formatCount(trainingState?.snapshots)} />
-            <SettingsMetric label="Latest model" value={tracker?.model ? `${tracker.model.sample_count ?? 0} samples` : "None"} />
+            <SettingsMetric label="Latest model" value={tracker?.model ? formatModelCount(tracker.model) : "None"} />
             <SettingsMetric label="Auto training" value={autoTraining?.enabled ? "Enabled" : "Disabled"} />
             <SettingsMetric label="Last auto result" value={autoTrainingStatus(autoTraining)} />
           </div>
@@ -312,6 +312,13 @@ function HistoricalSettingsPanel(props: {
 
 function formatCount(value: number | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
+}
+
+function formatModelCount(model: { sample_count?: number; game_count?: number | null }): string {
+  if (typeof model.game_count === "number" && typeof model.sample_count === "number") {
+    return `${model.game_count} games / ${model.sample_count} snapshots`;
+  }
+  return `${model.sample_count ?? 0} samples`;
 }
 
 function formatTimestamp(value: string | null | undefined): string {

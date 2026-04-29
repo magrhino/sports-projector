@@ -231,11 +231,14 @@ export function projectionNote(data: Record<string, unknown>, kind: "live" | "hi
       typeof marketDifference === "number" && Math.abs(marketDifference) >= 15
         ? `High variance: ${formatSignedNumber(marketDifference)} vs market`
         : "";
+    const learnedModel = learned ? formatLearnedModelNote(learned) : "";
+    const learnedCaution = learned ? formatLearnedCaution(learned) : "";
     return [
       asString(quality.status) ? `Status: ${quality.status}` : "",
       asString(quality.recent_scoring_source) ? `Source: ${quality.recent_scoring_source}` : "",
       recentWindow,
-      learned ? `Learned model: ${learned.sample_count} samples` : "",
+      learnedModel,
+      learnedCaution,
       marketNote,
       String(warnings[0] || "")
     ]
@@ -249,6 +252,29 @@ export function projectionNote(data: Record<string, unknown>, kind: "live" | "hi
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+function formatLearnedModelNote(learned: Record<string, unknown>): string {
+  const samples = asNumber(learned.sample_count);
+  const games = asNumber(learned.game_count);
+  if (games !== undefined && samples !== undefined) {
+    return `Learned model: ${games} games / ${samples} snapshots`;
+  }
+  if (samples !== undefined) {
+    return `Learned model: ${samples} snapshots`;
+  }
+  return "";
+}
+
+function formatLearnedCaution(learned: Record<string, unknown>): string {
+  const status = asString(learned.adjustment_status);
+  if (status === "skipped_low_coverage") {
+    return "Learned correction skipped: low coverage";
+  }
+  if (status === "clipped") {
+    return "Learned correction clipped";
+  }
+  return "";
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {

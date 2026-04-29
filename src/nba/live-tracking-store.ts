@@ -37,6 +37,8 @@ export interface LiveTrackingStatus {
   model: {
     trained_at: string;
     sample_count: number;
+    game_count: number | null;
+    effective_sample_count: number | null;
     metrics: LiveModelArtifact["metrics"];
   } | null;
 }
@@ -327,6 +329,8 @@ export class LiveTrackingStore {
         ? {
             trained_at: model.trained_at,
             sample_count: model.sample_count,
+            game_count: model.game_count ?? null,
+            effective_sample_count: model.effective_sample_count ?? null,
             metrics: model.metrics
           }
         : null

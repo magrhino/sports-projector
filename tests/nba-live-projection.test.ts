@@ -13,7 +13,7 @@ import {
 } from "../src/nba/live-projection.js";
 
 describe("NBA live projection model", () => {
-  it("ports the draft live-total model and returns a score split", () => {
+  it("projects a late-game total and returns a score split", () => {
     const result = projectLiveNbaScore({
       currentHomeScore: 83,
       currentAwayScore: 78,
@@ -28,12 +28,79 @@ describe("NBA live projection model", () => {
     expect(result.minutes_left).toBe(9.42);
     expect(result.foul_bonus).toBe(1);
     expect(result.overtime_probability).toBe(0.01);
-    expect(result.projected_total).toBeCloseTo(201.66, 2);
+    expect(result.projected_total).toBeCloseTo(201.77, 2);
     expect(result.most_likely_score).toEqual({
       home: 104,
       away: 98,
       total: 202
     });
+  });
+
+  it("shrinks early Q1 hot starts toward the market prior", () => {
+    const result = projectLiveNbaScore({
+      currentHomeScore: 26,
+      currentAwayScore: 17,
+      period: 1,
+      clock: "4:32",
+      marketTotalLine: 226.5,
+      recentPoints: 27,
+      recentMinutes: 4,
+      recentHomePoints: 26,
+      recentAwayPoints: 1,
+      isPlayoffs: true
+    });
+
+    expect(result.raw_full_game_rate).toBeGreaterThan(5.7);
+    expect(result.raw_recent_rate).toBe(6.75);
+    expect(result.projected_total).toBeLessThan(245);
+    expect(result.projected_total).toBeGreaterThan(226.5);
+    expect(result.most_likely_score.home).toBeLessThan(140);
+    expect(result.most_likely_score.away).toBeGreaterThan(100);
+    expect(result.p_over).toBeLessThan(0.9);
+    expect(result.p_over).toBeGreaterThan(0.5);
+    expect(result.rate_weights.prior).toBeGreaterThan(result.rate_weights.full_game);
+  });
+
+  it("shrinks early Q1 cold starts toward the market prior", () => {
+    const result = projectLiveNbaScore({
+      currentHomeScore: 6,
+      currentAwayScore: 5,
+      period: 1,
+      clock: "6:00",
+      marketTotalLine: 226.5,
+      recentPoints: 7,
+      recentMinutes: 4,
+      recentHomePoints: 4,
+      recentAwayPoints: 3,
+      isPlayoffs: true
+    });
+
+    expect(result.raw_full_game_rate).toBeLessThan(2);
+    expect(result.projected_total).toBeGreaterThan(190);
+    expect(result.projected_total).toBeLessThan(226.5);
+    expect(result.p_over).toBeLessThan(0.5);
+  });
+
+  it("keeps late Q4 projections responsive to close-game foul context", () => {
+    const result = projectLiveNbaScore({
+      currentHomeScore: 101,
+      currentAwayScore: 99,
+      period: 4,
+      clock: "1:30",
+      marketTotalLine: 214.5,
+      recentPoints: 20,
+      recentMinutes: 4,
+      recentHomePoints: 12,
+      recentAwayPoints: 8,
+      homeFoulsPeriod: 4,
+      awayFoulsPeriod: 4,
+      isPlayoffs: true
+    });
+
+    expect(result.foul_bonus).toBeGreaterThan(0);
+    expect(result.projected_total).toBeGreaterThan(205);
+    expect(result.projected_remaining_points).toBeGreaterThan(5);
+    expect(result.rate_weights.prior).toBeLessThan(result.rate_weights.full_game);
   });
 
   it("selects the total market closest to even probability", () => {

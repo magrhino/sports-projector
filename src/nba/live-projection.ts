@@ -22,15 +22,26 @@ export interface LiveScoreProjectionResult {
   minutes_left: number;
   margin: number;
   historical_baseline_total: number;
+  raw_full_game_rate: number;
+  raw_recent_rate: number | null;
   full_game_rate: number;
   prior_rate: number;
   recent_rate: number;
   blended_rate: number;
+  rate_weights: {
+    prior: number;
+    full_game: number;
+    recent: number;
+  };
+  effective_minutes: number;
+  recent_effective_minutes: number | null;
   trailing_fouls_to_give: number | null;
   foul_bonus: number;
   overtime_probability: number;
   overtime_bonus: number;
   blowout_drag: number;
+  residual_sigma: number;
+  projection_uncertainty: number;
   projected_total: number;
   projected_remaining_points: number;
   market_total_line: number | null;
@@ -85,6 +96,8 @@ const NBA_PERIOD_MINUTES = 12;
 const NBA_OVERTIME_MINUTES = 5;
 const SCORE_SPLIT_PRIOR_WEIGHT = 0.5;
 const MAX_RECENT_POINTS_PER_MINUTE = 7;
+const FULL_GAME_PRIOR_MINUTES = 16;
+const RECENT_PRIOR_MINUTES = 12;
 
 export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreProjectionResult {
   const currentTotal = input.currentHomeScore + input.currentAwayScore;
@@ -95,14 +108,31 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
   const periodLeft = timing.period_left;
   const isPlayoffs = input.isPlayoffs ?? true;
 
-  const fullGameRate = elapsed > 0 ? currentTotal / elapsed : baselineRate(input.marketTotalLine, currentTotal);
   const historicalBaseline = baselineTotal(input, currentTotal, elapsed, minutesLeft);
   const priorRate = historicalBaseline / NBA_REGULATION_MINUTES;
+  const rawFullGameRate = elapsed > 0 ? currentTotal / elapsed : priorRate;
   const recentScoring = sanitizeRecentScoring(input, currentTotal);
-  const recentRate = recentScoring ? recentScoring.points / recentScoring.minutes : fullGameRate;
-
-  const [wPrior, wFull, wRecent] = dynamicRateWeights(minutesLeft);
-  const blendedRate = wPrior * priorRate + wFull * fullGameRate + wRecent * recentRate;
+  const rawRecentRate = recentScoring ? recentScoring.points / recentScoring.minutes : null;
+  const fullGameRate = shrinkRate({
+    observedPoints: currentTotal,
+    observedMinutes: elapsed,
+    priorRate,
+    priorMinutes: FULL_GAME_PRIOR_MINUTES
+  });
+  const recentRate = recentScoring
+    ? shrinkRate({
+        observedPoints: recentScoring.points,
+        observedMinutes: recentScoring.minutes,
+        priorRate,
+        priorMinutes: RECENT_PRIOR_MINUTES
+      })
+    : fullGameRate;
+  const weights = dynamicRateWeights({
+    elapsed,
+    minutesLeft,
+    recentMinutes: recentScoring?.minutes ?? null
+  });
+  const blendedRate = weights.prior * priorRate + weights.fullGame * fullGameRate + weights.recent * recentRate;
 
   let trailingFouls: number | null | undefined = null;
   if (input.currentHomeScore < input.currentAwayScore) {
@@ -123,13 +153,18 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
     currentHomeScore: input.currentHomeScore,
     currentAwayScore: input.currentAwayScore,
     projectedTotal,
+    elapsedMinutes: elapsed,
+    minutesLeft,
     recentHomePoints: recentScoring?.homePoints,
-    recentAwayPoints: recentScoring?.awayPoints
+    recentAwayPoints: recentScoring?.awayPoints,
+    recentMinutes: recentScoring?.minutes
   });
   const marketTotalLine = input.marketTotalLine ?? null;
   const difference = marketTotalLine === null ? null : projectedTotal - marketTotalLine;
   const sigma = residualSigma(minutesLeft);
-  const pOver = marketTotalLine === null ? null : 1 - normalCdf((marketTotalLine - projectedTotal) / sigma);
+  const pOver =
+    marketTotalLine === null ? null : clampProbability(1 - normalCdf((marketTotalLine - projectedTotal) / sigma));
+  const projectionUncertainty = projectionUncertaintyTotal(sigma, minutesLeft);
 
   return {
     current_total: currentTotal,
@@ -137,15 +172,26 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
     minutes_left: roundStat(minutesLeft),
     margin,
     historical_baseline_total: roundStat(historicalBaseline),
+    raw_full_game_rate: roundRate(rawFullGameRate),
+    raw_recent_rate: rawRecentRate === null ? null : roundRate(rawRecentRate),
     full_game_rate: roundRate(fullGameRate),
     prior_rate: roundRate(priorRate),
     recent_rate: roundRate(recentRate),
     blended_rate: roundRate(blendedRate),
+    rate_weights: {
+      prior: roundProbability(weights.prior),
+      full_game: roundProbability(weights.fullGame),
+      recent: roundProbability(weights.recent)
+    },
+    effective_minutes: roundStat(elapsed + weights.recent * (recentScoring?.minutes ?? 0)),
+    recent_effective_minutes: recentScoring ? roundStat(recentScoring.minutes * weights.recent) : null,
     trailing_fouls_to_give: trailingFoulsToGive,
     foul_bonus: roundStat(foulBonus),
     overtime_probability: roundProbability(otProbability),
     overtime_bonus: roundStat(otBonus),
     blowout_drag: roundStat(drag),
+    residual_sigma: roundStat(sigma),
+    projection_uncertainty: roundStat(projectionUncertainty),
     projected_total: roundStat(projectedTotal),
     projected_remaining_points: roundStat(Math.max(projectedTotal - currentTotal, 0)),
     market_total_line: marketTotalLine,
@@ -166,7 +212,8 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
     },
     formulas: [
       "projected_total = current_total + blended_rate * minutes_left + foul_bonus + overtime_bonus + blowout_drag",
-      "blended_rate = weighted average of prior_rate, full_game_rate, and recent_rate",
+      "full_game_rate and recent_rate are posterior rates shrunk toward the market or pregame prior",
+      "blended_rate = evidence-aware weighted average of prior_rate, full_game_rate, and recent_rate",
       "score split = regularized blend of current scoring share, recent scoring share when available, and a neutral 50/50 prior"
     ]
   };
@@ -387,27 +434,47 @@ function baselineTotal(
   return currentTotal;
 }
 
-function baselineRate(marketTotalLine: number | null | undefined, currentTotal: number): number {
-  if (marketTotalLine !== null && marketTotalLine !== undefined) {
-    return marketTotalLine / NBA_REGULATION_MINUTES;
+function shrinkRate(input: {
+  observedPoints: number;
+  observedMinutes: number;
+  priorRate: number;
+  priorMinutes: number;
+}): number {
+  if (input.observedMinutes <= 0) {
+    return input.priorRate;
   }
-  return currentTotal / NBA_REGULATION_MINUTES;
+  return (input.observedPoints + input.priorRate * input.priorMinutes) / (input.observedMinutes + input.priorMinutes);
 }
 
-function dynamicRateWeights(minutesLeft: number): [number, number, number] {
-  if (minutesLeft > 24) {
-    return [0.5, 0.35, 0.15];
-  }
-  if (minutesLeft > 12) {
-    return [0.35, 0.4, 0.25];
-  }
-  if (minutesLeft > 6) {
-    return [0.3, 0.3, 0.4];
-  }
-  if (minutesLeft > 2) {
-    return [0.25, 0.25, 0.5];
-  }
-  return [0.2, 0.2, 0.6];
+function dynamicRateWeights(input: {
+  elapsed: number;
+  minutesLeft: number;
+  recentMinutes: number | null;
+}): { prior: number; fullGame: number; recent: number } {
+  const fullGameEvidence = input.elapsed / (input.elapsed + FULL_GAME_PRIOR_MINUTES);
+  const fullGameCap =
+    input.minutesLeft > 36 ? 0.35 : input.minutesLeft > 24 ? 0.45 : input.minutesLeft > 12 ? 0.6 : 0.75;
+  const fullGame = Math.min(fullGameCap, Math.max(0, fullGameEvidence));
+  const recentEvidence =
+    input.recentMinutes === null ? 0 : input.recentMinutes / (input.recentMinutes + RECENT_PRIOR_MINUTES);
+  const recentCap =
+    input.minutesLeft > 36
+      ? 0.08
+      : input.minutesLeft > 24
+        ? 0.12
+        : input.minutesLeft > 12
+          ? 0.22
+          : input.minutesLeft > 6
+            ? 0.32
+            : 0.45;
+  const recent = Math.min(recentCap, Math.max(0, recentEvidence));
+  const combinedEvidence = Math.min(0.9, fullGame + recent);
+  const scale = fullGame + recent > 0 ? combinedEvidence / (fullGame + recent) : 0;
+  return {
+    prior: Math.max(0.1, 1 - combinedEvidence),
+    fullGame: fullGame * scale,
+    recent: recent * scale
+  };
 }
 
 function foulsToGiveBeforePenalty(
@@ -560,24 +627,48 @@ function blowoutDrag(minutesLeft: number, margin: number, isPlayoffs: boolean): 
 }
 
 function residualSigma(minutesLeft: number): number {
+  if (minutesLeft > 36) {
+    return 20;
+  }
+  if (minutesLeft > 30) {
+    return 18;
+  }
+  if (minutesLeft > 24) {
+    return 16;
+  }
+  if (minutesLeft > 18) {
+    return 14;
+  }
   if (minutesLeft > 12) {
-    return 11;
+    return 12;
   }
   if (minutesLeft > 6) {
-    return 8;
+    return 9;
   }
   if (minutesLeft > 2) {
-    return 5.5;
+    return 6;
   }
-  return 4;
+  return 4.5;
+}
+
+function projectionUncertaintyTotal(sigma: number, minutesLeft: number): number {
+  const phaseMultiplier = minutesLeft > 36 ? 1.2 : minutesLeft > 24 ? 1.1 : minutesLeft > 12 ? 1 : 0.9;
+  return sigma * phaseMultiplier;
+}
+
+function clampProbability(value: number): number {
+  return clamp(value, 0.01, 0.99);
 }
 
 function mostLikelyScore(input: {
   currentHomeScore: number;
   currentAwayScore: number;
   projectedTotal: number;
+  elapsedMinutes: number;
+  minutesLeft: number;
   recentHomePoints?: number | null;
   recentAwayPoints?: number | null;
+  recentMinutes?: number | null;
 }): { home: number; away: number; total: number } {
   const roundedTotal = Math.max(Math.round(input.projectedTotal), input.currentHomeScore + input.currentAwayScore);
   const remainingPoints = Math.max(roundedTotal - input.currentHomeScore - input.currentAwayScore, 0);
@@ -587,10 +678,19 @@ function mostLikelyScore(input: {
       : 0.5;
   const recentTotal = (input.recentHomePoints ?? 0) + (input.recentAwayPoints ?? 0);
   const recentShare = recentTotal > 0 ? (input.recentHomePoints ?? 0) / recentTotal : currentShare;
+  const currentWeight = input.elapsedMinutes / (input.elapsedMinutes + 24);
+  const recentEvidence =
+    input.recentMinutes && input.recentMinutes > 0 ? input.recentMinutes / (input.recentMinutes + 16) : 0;
+  const recentCap =
+    input.minutesLeft > 36 ? 0.06 : input.minutesLeft > 24 ? 0.08 : input.minutesLeft > 12 ? 0.12 : 0.18;
+  const shareCap =
+    input.minutesLeft > 36 ? 0.07 : input.minutesLeft > 24 ? 0.09 : input.minutesLeft > 12 ? 0.13 : 0.2;
+  const currentSignal = (currentShare - 0.5) * currentWeight;
+  const recentSignal = (recentShare - 0.5) * Math.min(recentCap, recentEvidence);
   const homeShare = clamp(
-    SCORE_SPLIT_PRIOR_WEIGHT * 0.5 + 0.3 * currentShare + 0.2 * recentShare,
-    0.35,
-    0.65
+    SCORE_SPLIT_PRIOR_WEIGHT + currentSignal + recentSignal,
+    0.5 - shareCap,
+    0.5 + shareCap
   );
   let home = input.currentHomeScore + Math.round(remainingPoints * homeShare);
   home = Math.max(input.currentHomeScore, Math.min(home, roundedTotal - input.currentAwayScore));
