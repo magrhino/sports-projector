@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.3.0...sports-projector-v0.4.0) (2026-04-29)
+
+
+### Features
+
+* **nba:** gate learned live projections by accuracy review ([e468c26](https://github.com/magrhino/sports-projector/commit/e468c2633bbc0a1d9555e18d60b34795d415309e))
+
+
+### Bug Fixes
+
+* **nba:** calibrate live projection pace and learned corrections ([c368fad](https://github.com/magrhino/sports-projector/commit/c368fad4ad791eee17769839fc8f3cd245995120))
+* **nba:** calibrate live projection pace and learned corrections ([c368fad](https://github.com/magrhino/sports-projector/commit/c368fad4ad791eee17769839fc8f3cd245995120))
+
 ## [0.3.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.2.1...sports-projector-v0.3.0) (2026-04-29)
 
 
