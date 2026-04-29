@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
@@ -142,6 +142,52 @@ describe("LiveModelTrainingScheduler", () => {
       cleanup();
     }
   });
+
+  it("starts immediately, reschedules with current settings, and stops future auto training", async () => {
+    vi.useFakeTimers();
+    const { store, cleanup } = createStore();
+    let scheduler: LiveModelTrainingScheduler | null = null;
+    try {
+      seedTrainableSnapshots(store, 2);
+      let intervalSeconds = 60;
+      scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => ({
+        ...DEFAULT_SETTINGS,
+        live_training_interval_seconds: intervalSeconds
+      }));
+      const trainSpy = vi.spyOn(scheduler, "trainIfDue");
+
+      scheduler.start();
+      intervalSeconds = 120;
+      await flushPromises();
+
+      expect(trainSpy).toHaveBeenCalledTimes(1);
+      expect(store.loadLatestModel()?.sample_count).toBe(2);
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(trainSpy).toHaveBeenCalledTimes(1);
+
+      intervalSeconds = 60;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(trainSpy).toHaveBeenCalledTimes(2);
+      expect(scheduler.status().last_skip_reason).toMatch(/No new finalized snapshots/);
+
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(trainSpy).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(trainSpy).toHaveBeenCalledTimes(3);
+
+      scheduler.stop();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(trainSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      scheduler?.stop();
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("LiveNbaTracker", () => {
@@ -203,7 +249,38 @@ describe("LiveNbaTracker", () => {
       cleanup();
     }
   });
+
+  it("does not persist learned tracker corrections when live enhancements are disabled", async () => {
+    const enabledSnapshot = await latestTrackerSnapshotWithEnhancements(true);
+    const disabledSnapshot = await latestTrackerSnapshotWithEnhancements(false);
+
+    expect(enabledSnapshot?.learned_projected_total).toEqual(expect.any(Number));
+    expect(disabledSnapshot?.learned_projected_total).toBeNull();
+  });
 });
+
+async function latestTrackerSnapshotWithEnhancements(liveEnhancementsEnabled: boolean) {
+  const { store, cleanup } = createStore();
+  try {
+    seedTrainableSnapshots(store, 2);
+    store.trainLatestModel(2);
+    const tracker = new LiveNbaTracker(
+      { ...config(store), minSnapshots: 2 },
+      store,
+      espnClientDouble(),
+      kalshiClientDouble(),
+      () => ({
+        ...DEFAULT_SETTINGS,
+        live_enhancements_enabled: liveEnhancementsEnabled
+      })
+    );
+
+    await tracker.poll();
+    return store.status(true).latest_snapshot;
+  } finally {
+    cleanup();
+  }
+}
 
 function createStore(): { store: LiveTrackingStore; cleanup: () => void } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-live-"));
@@ -246,6 +323,11 @@ function config(store: LiveTrackingStore): LiveTrackingConfig {
     concurrency: 2,
     minSnapshots: 50
   };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function espnClientDouble(): EspnClient {

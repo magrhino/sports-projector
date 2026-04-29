@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
 import {
   HistoricalRefreshScheduler,
   historicalRefreshArgs,
@@ -64,6 +65,30 @@ describe("HistoricalRefreshScheduler", () => {
 
     expect(second).toBe(false);
     expect(scheduler.status().last_success_at).toEqual(expect.any(String));
+  });
+
+  it("passes current historical enhancement settings to the refresh runner", async () => {
+    let runnerConfig: HistoricalRefreshConfig | null = null;
+    const scheduler = new HistoricalRefreshScheduler(
+      config(),
+      async (nextConfig) => {
+        runnerConfig = nextConfig;
+        return {
+          stdout: JSON.stringify({ ok: true }),
+          stderr: ""
+        };
+      },
+      () => ({
+        ...DEFAULT_SETTINGS,
+        historical_enhancements_enabled: false
+      })
+    );
+
+    const ran = await scheduler.refresh();
+
+    expect(ran).toBe(true);
+    expect(runnerConfig?.historicalEnhancementsEnabled).toBe(false);
+    expect(scheduler.status().enhancements_enabled).toBe(false);
   });
 });
 
