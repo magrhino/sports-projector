@@ -38,6 +38,8 @@ describe("LiveTrackingStore", () => {
 
       expect(status.snapshots).toBe(2);
       expect(status.training.snapshots).toBe(2);
+      expect(status.training.effective_snapshots).toBe(2);
+      expect(status.training.games).toBe(1);
       expect(status.games.finalized).toBe(1);
       expect(result.model.sample_count).toBe(2);
       expect(store.loadLatestModel()?.sample_count).toBe(2);
@@ -74,7 +76,35 @@ describe("LiveTrackingStore", () => {
       const status = store.status(true);
       expect(status.snapshots).toBe(0);
       expect(status.training.snapshots).toBe(0);
+      expect(status.training.effective_snapshots).toBe(0);
       expect(status.games.tracked).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports training readiness from effective game/time-bucket snapshots", () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedDuplicateBucketSnapshots(store, 3);
+
+      const status = store.status(true, 3);
+      const review = store.reviewLatestModel(3);
+
+      expect(status.training.snapshots).toBe(3);
+      expect(status.training.effective_snapshots).toBe(1);
+      expect(status.training.games).toBe(1);
+      expect(status.training.ready).toBe(false);
+      expect(review.training).toMatchObject({
+        snapshots: 3,
+        effective_snapshots: 1,
+        games: 1,
+        ready: false
+      });
+      expect(review.data_sources[1]).toMatchObject({
+        source: "kalshi_game_stats_historical_backfill",
+        status: "requires_event_ids"
+      });
     } finally {
       cleanup();
     }
@@ -108,7 +138,7 @@ describe("LiveModelTrainingScheduler", () => {
       const trained = await scheduler.trainIfDue();
 
       expect(trained).toBe(false);
-      expect(scheduler.status().last_skip_reason).toMatch(/Need 50 finalized trainable snapshots/);
+      expect(scheduler.status().last_skip_reason).toMatch(/Need 50 effective game\/time-bucket snapshots/);
       expect(store.loadLatestModel()).toBeNull();
     } finally {
       cleanup();
@@ -125,7 +155,68 @@ describe("LiveModelTrainingScheduler", () => {
       const trained = await scheduler.trainIfDue();
 
       expect(trained).toBe(false);
-      expect(scheduler.status().last_skip_reason).toMatch(/No new finalized snapshots/);
+      expect(scheduler.status().last_skip_reason).toMatch(/No new effective snapshots/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skips when only duplicate raw snapshots were added after the latest model", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedTrainableSnapshots(store, 2);
+      store.trainLatestModel(2);
+      store.recordProjectionSnapshot({
+        trigger: "tracker",
+        payload: projectionPayload({
+          eventId: "401",
+          homeScore: 84,
+          awayScore: 80,
+          projectedTotal: 205,
+          clock: "9:00",
+          elapsedMinutes: 39,
+          minutesLeft: 9
+        })
+      });
+      const scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => DEFAULT_SETTINGS);
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(store.status(true, 2).training).toMatchObject({
+        snapshots: 3,
+        effective_snapshots: 2,
+        ready: true
+      });
+      expect(trained).toBe(false);
+      expect(scheduler.status().last_skip_reason).toMatch(/No new effective snapshots/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("trains when a new effective snapshot is available after the latest model", async () => {
+    const { store, cleanup } = createStore();
+    try {
+      seedTrainableSnapshots(store, 2);
+      store.trainLatestModel(2);
+      store.recordProjectionSnapshot({
+        trigger: "tracker",
+        payload: projectionPayload({
+          eventId: "401",
+          homeScore: 86,
+          awayScore: 82,
+          projectedTotal: 208,
+          clock: "3:25",
+          elapsedMinutes: 44.58,
+          minutesLeft: 3.42
+        })
+      });
+      const scheduler = new LiveModelTrainingScheduler({ ...config(store), minSnapshots: 2 }, store, () => DEFAULT_SETTINGS);
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(trained).toBe(true);
+      expect(store.loadLatestModel()?.effective_sample_count).toBe(3);
     } finally {
       cleanup();
     }
@@ -178,7 +269,7 @@ describe("LiveModelTrainingScheduler", () => {
       intervalSeconds = 60;
       await vi.advanceTimersByTimeAsync(1);
       expect(trainSpy).toHaveBeenCalledTimes(2);
-      expect(scheduler.status().last_skip_reason).toMatch(/No new finalized snapshots/);
+      expect(scheduler.status().last_skip_reason).toMatch(/No new effective snapshots/);
 
       await vi.advanceTimersByTimeAsync(59_999);
       expect(trainSpy).toHaveBeenCalledTimes(2);
@@ -327,6 +418,30 @@ function seedTrainableSnapshots(store: LiveTrackingStore, count: number): void {
   }
   store.upsertGame({
     event_id: "401",
+    final_home_score: 101,
+    final_away_score: 99,
+    status_state: "post",
+    finalized_at: "2026-04-26T02:00:00Z"
+  });
+}
+
+function seedDuplicateBucketSnapshots(store: LiveTrackingStore, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    store.recordProjectionSnapshot({
+      trigger: "tracker",
+      payload: projectionPayload({
+        eventId: "duplicate-bucket",
+        homeScore: 80 + index,
+        awayScore: 78 + index,
+        projectedTotal: 202 + index,
+        clock: "9:25",
+        elapsedMinutes: 38.58,
+        minutesLeft: 9.42
+      })
+    });
+  }
+  store.upsertGame({
+    event_id: "duplicate-bucket",
     final_home_score: 101,
     final_away_score: 99,
     status_state: "post",

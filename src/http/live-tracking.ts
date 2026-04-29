@@ -33,6 +33,8 @@ export function getLiveTrackingStatus(context: LiveTrackingHttpContext | null): 
           snapshots: 0,
           training: {
             snapshots: 0,
+            effective_snapshots: 0,
+            games: 0,
             min_snapshots: null,
             ready: false
           },

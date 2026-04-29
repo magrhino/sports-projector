@@ -86,6 +86,8 @@ export type TrackerStatusPayload = {
     training?: {
       ready?: boolean;
       snapshots?: number;
+      effective_snapshots?: number;
+      games?: number;
       min_snapshots?: number;
     };
   };

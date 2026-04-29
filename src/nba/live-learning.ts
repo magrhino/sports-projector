@@ -112,6 +112,14 @@ export interface LiveModelReviewDataSource {
   note: string;
 }
 
+export interface LiveTrainingSummary {
+  snapshots: number;
+  effective_snapshots: number;
+  games: number;
+  min_snapshots: number | null;
+  ready: boolean;
+}
+
 export interface LearnedProjection {
   projected_home_score: number;
   projected_away_score: number;
@@ -191,6 +199,8 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
   const split = splitExamplesByGame(effectiveExamples);
   const trainExamples = split.train;
   const validationExamples = split.validation;
+  const trainGameIds = new Set(trainExamples.map((example) => example.eventId));
+  const rawTrainExamples = examples.filter((example) => trainGameIds.has(example.eventId));
   const normalization = normalizeExamples(trainExamples);
   const normalizedTrain = applyNormalization(trainExamples, normalization);
   const normalizedValidation = applyNormalization(validationExamples, normalization);
@@ -214,7 +224,7 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
     train_count: normalizedTrain.length,
     validation_count: normalizedValidation.length,
     feature_columns: FEATURE_COLUMNS,
-    bucket_coverage: bucketCoverage(examples, effectiveExamples),
+    bucket_coverage: bucketCoverage(rawTrainExamples, trainExamples),
     hidden_size: hiddenSize,
     input_mean: normalization.mean,
     input_std: normalization.std,
@@ -232,7 +242,12 @@ export function trainLiveModel(rows: LiveTrainingRow[], minSnapshots: number): L
     accuracy_gate: defaultAccuracyGate("insufficient_data", ["Model has not been evaluated."])
   };
 
-  const evaluation = evaluateExamples(model, validationExamples, "heldout_validation", reviewDataSources(examples.length, minSnapshots));
+  const evaluation = evaluateExamples(
+    model,
+    validationExamples,
+    "heldout_validation",
+    reviewDataSources(examples.length, minSnapshots, effectiveExamples.length)
+  );
   const accuracyGate = accuracyGateForEvaluation(evaluation);
   return {
     ...model,
@@ -254,11 +269,12 @@ export function evaluateLiveModel(model: LiveModelArtifact, rows: LiveTrainingRo
   const examples = rows
     .map((row) => toTrainingExample(row))
     .filter((example): example is TrainingExample => example !== null);
+  const summary = liveTrainingSummary(rows, model.sample_count);
   return evaluateExamples(
     model,
     downsampleExamples(examples),
     "local_snapshot_review",
-    reviewDataSources(examples.length, model.sample_count)
+    reviewDataSources(summary.snapshots, model.sample_count, summary.effective_snapshots)
   );
 }
 
@@ -273,9 +289,24 @@ export function liveModelAccuracyGate(model: Partial<LiveModelArtifact> | null |
   );
 }
 
-export function reviewDataSources(localRows: number, requiredRows: number): LiveModelReviewDataSource[] {
+export function liveTrainingSummary(rows: LiveTrainingRow[], minSnapshots: number | null): LiveTrainingSummary {
+  const examples = rows
+    .map((row) => toTrainingExample(row))
+    .filter((example): example is TrainingExample => example !== null);
+  const effectiveExamples = downsampleExamples(examples);
+  const effectiveSnapshots = effectiveExamples.length;
+  return {
+    snapshots: examples.length,
+    effective_snapshots: effectiveSnapshots,
+    games: distinctCount(examples.map((example) => example.eventId)),
+    min_snapshots: minSnapshots,
+    ready: minSnapshots === null ? effectiveSnapshots > 0 : effectiveSnapshots >= minSnapshots
+  };
+}
+
+export function reviewDataSources(localRows: number, requiredRows: number, effectiveRows = localRows): LiveModelReviewDataSource[] {
   const localStatus = localRows > 0 ? "used" : "missing";
-  const localReady = localRows >= requiredRows;
+  const localReady = effectiveRows >= requiredRows;
   return [
     {
       source: "local_live_tracking_snapshots",
@@ -334,16 +365,19 @@ function predictLearnedFromRow(model: LiveModelArtifact, row: Partial<LiveTraini
   const marginCorrection = coverageIsThin ? 0 : clippedMarginCorrection;
   const projectedTotal = Math.max(currentHome + currentAway, heuristicTotal + totalCorrection);
   const projectedMargin = heuristicMargin + marginCorrection;
-  const homeRaw = (projectedTotal + projectedMargin) / 2;
-  const home = Math.max(currentHome, Math.round(homeRaw));
-  const away = Math.max(currentAway, Math.round(projectedTotal - home));
+  const score = learnedScoreSplit({
+    currentHome,
+    currentAway,
+    projectedTotal,
+    projectedMargin
+  });
   const adjustmentStatus = coverageIsThin ? "skipped_low_coverage" : wasClipped ? "clipped" : "applied";
 
   return {
-    projected_home_score: home,
-    projected_away_score: away,
-    projected_total: roundMetric(home + away),
-    projected_home_margin: roundMetric(home - away),
+    projected_home_score: score.home,
+    projected_away_score: score.away,
+    projected_total: score.total,
+    projected_home_margin: roundMetric(score.home - score.away),
     total_residual_correction: roundMetric(totalCorrection),
     margin_residual_correction: roundMetric(marginCorrection),
     raw_total_residual_correction: roundMetric(rawTotalCorrection),
@@ -364,6 +398,21 @@ function predictLearnedFromRow(model: LiveModelArtifact, row: Partial<LiveTraini
     comparable_bucket: bucket,
     comparable_game_count: comparableGameCount,
     comparable_sample_count: comparableSampleCount
+  };
+}
+
+function learnedScoreSplit(input: {
+  currentHome: number;
+  currentAway: number;
+  projectedTotal: number;
+  projectedMargin: number;
+}): { home: number; away: number; total: number } {
+  const total = Math.max(Math.round(input.projectedTotal), input.currentHome + input.currentAway);
+  const home = clamp(Math.round((total + input.projectedMargin) / 2), input.currentHome, total - input.currentAway);
+  return {
+    home,
+    away: total - home,
+    total
   };
 }
 

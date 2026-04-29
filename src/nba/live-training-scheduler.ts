@@ -70,12 +70,16 @@ export class LiveModelTrainingScheduler {
       const status = this.store.status(this.config.enabled, this.config.minSnapshots);
       if (!status.training.ready) {
         this.skip(
-          `Need ${status.training.min_snapshots ?? "more"} finalized trainable snapshots; found ${status.training.snapshots}.`
+          `Need ${status.training.min_snapshots ?? "more"} effective game/time-bucket snapshots; found ${status.training.effective_snapshots} from ${status.training.snapshots} finalized snapshots.`
         );
         return false;
       }
-      if (status.model && status.model.sample_count >= status.training.snapshots) {
-        this.skip(`No new finalized snapshots since the latest ${status.model.sample_count}-sample model.`);
+      if (
+        status.model?.effective_sample_count !== null &&
+        status.model?.effective_sample_count !== undefined &&
+        status.model.effective_sample_count >= status.training.effective_snapshots
+      ) {
+        this.skip(`No new effective snapshots since the latest ${status.model.effective_sample_count}-effective-snapshot model.`);
         return false;
       }
 

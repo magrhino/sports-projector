@@ -24,9 +24,9 @@ describe("NBA live learned projection calibration", () => {
     expect(model.game_count).toBe(4);
     expect(model.effective_sample_count).toBe(4);
     expect(model.bucket_coverage["p1:m39-42"]).toEqual({
-      sample_count: 8,
-      game_count: 4,
-      effective_sample_count: 4
+      sample_count: 6,
+      game_count: 3,
+      effective_sample_count: 3
     });
     expect(model.validation_count).toBeGreaterThan(0);
     expect(model.accuracy_gate.status).toBe("insufficient_data");
@@ -50,6 +50,30 @@ describe("NBA live learned projection calibration", () => {
       status: "used",
       included_in_accuracy_gate: true
     });
+  });
+
+  it("does not count validation-only buckets as comparable training coverage", () => {
+    const rows = [
+      ...accuracyRows({ count: 80, totalDelta: 6, marginDelta: 2 }),
+      ...accuracyRows({
+        count: 20,
+        totalDelta: 6,
+        marginDelta: 2,
+        eventPrefix: "validation-only",
+        period: 1,
+        clock: "4:32",
+        elapsedMinutes: 7.47,
+        minutesLeft: 40.53
+      })
+    ];
+
+    const model = trainLiveModel(rows, 50);
+
+    expect(model.bucket_coverage["p1:m39-42"]).toBeUndefined();
+    expect(model.evaluation.validation_game_count).toBe(20);
+    expect(model.evaluation.improvement.mae_total).toBe(0);
+    expect(model.evaluation.improvement.mae_margin).toBe(0);
+    expect(model.accuracy_gate.status).toBe("failed");
   });
 
   it("fails the accuracy gate when learned corrections do not improve held-out accuracy", () => {
@@ -118,12 +142,30 @@ describe("NBA live learned projection calibration", () => {
     expect(learned?.margin_residual_correction).toBe(6);
     expect(learned?.projected_total).toBe(244);
   });
+
+  it("preserves the adjusted projected total when margin correction hits current score floors", () => {
+    const learned = predictLearnedProjection(
+      fixedCorrectionModel({
+        comparableGameCount: 5,
+        totalCorrection: 0,
+        marginCorrection: 20,
+        bucket: "p4:m0-3"
+      }),
+      constrainedProjectionData()
+    );
+
+    expect(learned).not.toBeNull();
+    expect(learned?.projected_total).toBe(200);
+    expect((learned?.projected_home_score ?? 0) + (learned?.projected_away_score ?? 0)).toBe(200);
+    expect(learned?.margin_residual_correction).toBe(14);
+  });
 });
 
 function fixedCorrectionModel(input: {
   comparableGameCount: number;
   totalCorrection: number;
   marginCorrection?: number;
+  bucket?: string;
 }): LiveModelArtifact {
   return {
     version: 1,
@@ -135,7 +177,7 @@ function fixedCorrectionModel(input: {
     validation_count: 8,
     feature_columns: [],
     bucket_coverage: {
-      "p1:m39-42": {
+      [input.bucket ?? "p1:m39-42"]: {
         sample_count: 20,
         game_count: input.comparableGameCount,
         effective_sample_count: input.comparableGameCount
@@ -225,6 +267,43 @@ function projectionData() {
   };
 }
 
+function constrainedProjectionData() {
+  return {
+    event_id: "margin-floor",
+    teams: {
+      home: { abbreviation: "BOS", score: 100 },
+      away: { abbreviation: "NY", score: 99 }
+    },
+    game_status: {
+      period: 4,
+      clock: "1:30"
+    },
+    live_projection: {
+      projected_home_score: 100,
+      projected_away_score: 100,
+      projected_total: 200,
+      market_total_line: 203,
+      difference_vs_market: -3,
+      p_over: 0.5,
+      model_inputs: {
+        current_home_score: 100,
+        current_away_score: 99
+      },
+      debug: {
+        model_details: {
+          elapsed_minutes: 46.5,
+          minutes_left: 1.5,
+          margin: 1,
+          full_game_rate: 4.17,
+          prior_rate: 4.23,
+          recent_rate: 4.17,
+          blended_rate: 4.2
+        }
+      }
+    }
+  };
+}
+
 function trainingRow(input: { eventId: string; finalTotal: number }): LiveTrainingRow {
   const finalHomeScore = Math.round(input.finalTotal / 2 + 5);
   return {
@@ -252,16 +331,25 @@ function trainingRow(input: { eventId: string; finalTotal: number }): LiveTraini
   };
 }
 
-function accuracyRows(input: { count: number; totalDelta: number; marginDelta: number }): LiveTrainingRow[] {
+function accuracyRows(input: {
+  count: number;
+  totalDelta: number;
+  marginDelta: number;
+  eventPrefix?: string;
+  period?: number;
+  clock?: string;
+  elapsedMinutes?: number;
+  minutesLeft?: number;
+}): LiveTrainingRow[] {
   return Array.from({ length: input.count }, (_, index) => {
     const projectedHomeScore = 100;
     const projectedAwayScore = 100;
     const finalTotal = projectedHomeScore + projectedAwayScore + input.totalDelta;
     const finalMargin = projectedHomeScore - projectedAwayScore + input.marginDelta;
     return {
-      event_id: `accuracy-game-${index}`,
-      period: 4,
-      clock: "9:25",
+      event_id: `${input.eventPrefix ?? "accuracy-game"}-${index}`,
+      period: input.period ?? 4,
+      clock: input.clock ?? "9:25",
       current_home_score: 80,
       current_away_score: 78,
       projected_home_score: projectedHomeScore,
@@ -270,8 +358,8 @@ function accuracyRows(input: { count: number; totalDelta: number; marginDelta: n
       projected_home_margin: projectedHomeScore - projectedAwayScore,
       market_total_line: 203,
       difference_vs_market: -3,
-      elapsed_minutes: 38.58,
-      minutes_left: 9.42,
+      elapsed_minutes: input.elapsedMinutes ?? 38.58,
+      minutes_left: input.minutesLeft ?? 9.42,
       margin: 2,
       full_game_rate: 4.17,
       prior_rate: 4.23,

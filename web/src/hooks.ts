@@ -446,12 +446,14 @@ function trackerStatusMessage(payload: TrackerStatusPayload): string {
   const model = tracker.model;
   const training = tracker.training || {};
   const trainingSnapshots = training.snapshots || 0;
+  const effectiveTraining =
+    typeof training.effective_snapshots === "number" ? ` (${training.effective_snapshots} effective)` : "";
 
   return [
     tracker.enabled ? "enabled" : "disabled",
     payload.running ? "polling" : "idle",
     `${tracker.snapshots || 0} collected snapshots`,
-    `${trainingSnapshots} trainable snapshots`,
+    `${trainingSnapshots} trainable snapshots${effectiveTraining}`,
     `${games.live || 0} live games`,
     latest?.market_total_line !== null && latest?.market_total_line !== undefined
       ? `latest market ${latest.market_total_line}`

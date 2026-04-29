@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   evaluateLiveModel,
   liveModelAccuracyGate,
+  liveTrainingSummary,
   reviewDataSources,
   trainLiveModel,
   type LiveModelAccuracyGate,
@@ -31,6 +32,8 @@ export interface LiveTrackingStatus {
   snapshots: number;
   training: {
     snapshots: number;
+    effective_snapshots: number;
+    games: number;
     min_snapshots: number | null;
     ready: boolean;
   };
@@ -66,6 +69,8 @@ export interface LiveModelReviewResult {
   generated_at: string;
   training: {
     snapshots: number;
+    effective_snapshots: number;
+    games: number;
     min_snapshots: number;
     ready: boolean;
   };
@@ -305,24 +310,26 @@ export class LiveTrackingStore {
         feature_columns_json: jsonString(model.feature_columns),
         metrics_json: jsonString(model.metrics),
         artifact_json: jsonString(model)
-    });
+      });
     return { status: "trained", model };
   }
 
   reviewLatestModel(minSnapshots: number): LiveModelReviewResult {
     const rows = this.trainingRows();
-    const trainingSnapshots = rows.length;
+    const summary = liveTrainingSummary(rows, minSnapshots);
     const model = this.loadLatestModel();
     return {
       status: "reviewed",
       db_path: this.dbPath,
       generated_at: new Date().toISOString(),
       training: {
-        snapshots: trainingSnapshots,
+        snapshots: summary.snapshots,
+        effective_snapshots: summary.effective_snapshots,
+        games: summary.games,
         min_snapshots: minSnapshots,
-        ready: trainingSnapshots >= minSnapshots
+        ready: summary.ready
       },
-      data_sources: reviewDataSources(trainingSnapshots, minSnapshots),
+      data_sources: reviewDataSources(summary.snapshots, minSnapshots, summary.effective_snapshots),
       latest_model: model
         ? {
             trained_at: model.trained_at,
@@ -351,7 +358,7 @@ export class LiveTrackingStore {
     const snapshotCount = this.db
       .prepare("SELECT COUNT(*) AS count FROM live_projection_snapshots")
       .get() as { count: number };
-    const trainingSnapshotCount = this.trainingSnapshotCount();
+    const trainingSummary = liveTrainingSummary(this.trainingRows(), minSnapshots);
     const latest = this.db
       .prepare(
         `SELECT event_id, captured_at, current_home_score, current_away_score, period, clock,
@@ -372,9 +379,11 @@ export class LiveTrackingStore {
       },
       snapshots: snapshotCount.count,
       training: {
-        snapshots: trainingSnapshotCount,
+        snapshots: trainingSummary.snapshots,
+        effective_snapshots: trainingSummary.effective_snapshots,
+        games: trainingSummary.games,
         min_snapshots: minSnapshots,
-        ready: minSnapshots === null ? trainingSnapshotCount > 0 : trainingSnapshotCount >= minSnapshots
+        ready: trainingSummary.ready
       },
       latest_snapshot: latest
         ? {
@@ -420,21 +429,6 @@ export class LiveTrackingStore {
         ORDER BY s.captured_at ASC, s.id ASC`
       )
       .all() as LiveTrainingRow[];
-  }
-
-  private trainingSnapshotCount(): number {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS count
-        FROM live_projection_snapshots s
-        JOIN live_games g ON g.event_id = s.event_id
-        WHERE g.final_home_score IS NOT NULL
-          AND g.final_away_score IS NOT NULL
-          AND s.projected_total IS NOT NULL
-          AND s.projected_home_margin IS NOT NULL`
-      )
-      .get() as { count: number };
-    return row.count;
   }
 
   private migrate(): void {

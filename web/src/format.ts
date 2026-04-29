@@ -133,9 +133,11 @@ export function formatTrainingError(payload: unknown): string {
   const training = asRecord(tracker.training);
   const collected = tracker.snapshots;
   if (training && typeof collected === "number") {
+    const effective = asNumber(training.effective_snapshots);
+    const effectiveNote = effective === undefined ? "" : `, ${effective} effective`;
     return `${asString(body.error) || "Training failed."} ${collected} collected snapshots, ${
       asNumber(training.snapshots) || 0
-    } finalized trainable snapshots.`;
+    } finalized trainable snapshots${effectiveNote}.`;
   }
   return asString(body.error) || "Training failed.";
 }
