@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.4.0...sports-projector-v0.4.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **nba:** correct live model verification gates ([7889005](https://github.com/magrhino/sports-projector/commit/7889005bd7320f760c01d8146eef1cc73f61f162))
+
 ## [0.4.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.3.0...sports-projector-v0.4.0) (2026-04-29)
 
 
