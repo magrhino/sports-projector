@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   displayTeamCode,
+  formatDisplayScore,
   formatGameTimeLeft,
   formatProbability,
   formatScoreStatus,
+  formatScoreTotal,
   formatTrainingError,
   isLiveGame,
   sortGames,
@@ -48,5 +50,14 @@ describe("web formatting helpers", () => {
         tracker: { snapshots: 10, training: { snapshots: 3 } }
       })
     ).toBe("Need at least 50 snapshots. 10 collected snapshots, 3 finalized trainable snapshots.");
+  });
+
+  it("formats current score values and combined score totals", () => {
+    expect(formatDisplayScore(101)).toBe("101");
+    expect(formatDisplayScore("99")).toBe("99");
+    expect(formatDisplayScore(null)).toBe("-");
+    expect(formatScoreTotal(101, 99)).toBe("200");
+    expect(formatScoreTotal("83", "78")).toBe("161");
+    expect(formatScoreTotal("83", null)).toBe("-");
   });
 });

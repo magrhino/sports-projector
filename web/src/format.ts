@@ -104,6 +104,22 @@ export function formatNullableNumber(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "-";
 }
 
+export function formatDisplayScore(value: unknown): string {
+  const numericScore = scoreAsNumber(value);
+  if (numericScore !== undefined) {
+    return formatScoreNumber(numericScore);
+  }
+
+  const label = typeof value === "string" ? value.trim() : "";
+  return label || "-";
+}
+
+export function formatScoreTotal(awayScore: unknown, homeScore: unknown): string {
+  const away = scoreAsNumber(awayScore);
+  const home = scoreAsNumber(homeScore);
+  return away !== undefined && home !== undefined ? formatScoreNumber(away + home) : "-";
+}
+
 export function formatGameTimeLeft(status: unknown, inputs: unknown): string {
   const gameStatus = asRecord(status) ?? {};
   const modelInputs = asRecord(inputs) ?? {};
@@ -295,6 +311,23 @@ function gameStatusRank(game: Game): number {
 
 function safeTime(value: number): number {
   return Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+}
+
+function scoreAsNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function formatScoreNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function asString(value: unknown): string {

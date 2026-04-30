@@ -5,7 +5,10 @@ import {
   asRecord,
   displayTeamCode,
   formatDateTime,
+  formatDisplayScore,
+  formatGameTimeLeft,
   formatScoreStatus,
+  formatScoreTotal,
   historicalMetrics,
   isLiveGame,
   leagueLabel,
@@ -162,15 +165,6 @@ function WorkspaceView() {
       </div>
 
       <div className="workspace-grid">
-        <ResultsPanel
-          games={searchedGames}
-          source={search.result?.source || "espn"}
-          title={search.result?.team?.name || "Search results"}
-          selectedGameId={selectedGameId}
-          onSelect={projections.selectGame}
-          hasSearched={Boolean(search.result)}
-        />
-
         <ProjectionPanel
           selectedGame={projections.selectedGame}
           payload={projections.payload}
@@ -180,6 +174,15 @@ function WorkspaceView() {
           error={projections.error}
           inFlight={projections.inFlight}
           onRefresh={projections.refresh}
+        />
+
+        <ResultsPanel
+          games={searchedGames}
+          source={search.result?.source || "espn"}
+          title={search.result?.team?.name || "Search results"}
+          selectedGameId={selectedGameId}
+          onSelect={projections.selectGame}
+          hasSearched={Boolean(search.result)}
         />
       </div>
     </>
@@ -605,13 +608,16 @@ function ProjectionCard(props: {
   } else {
     const metrics: ProjectionMetric[] = props.kind === "live" ? liveMetrics(data) : historicalMetrics(data);
     const note = projectionNote(data, props.kind);
+    const scoreSummary = props.kind === "live" ? liveScoreSummary(data) : null;
+    const supportingMetrics = scoreSummary ? metrics.filter((metric) => metric.label !== "Current score") : metrics;
     content =
       metrics.length === 0 ? (
         <p className="muted">Projection unavailable.</p>
       ) : (
         <>
+          {scoreSummary ? <LiveScoreFeature summary={scoreSummary} /> : null}
           <div className="metric-grid">
-            {metrics.map((metric) => (
+            {supportingMetrics.map((metric) => (
               <div className="metric" key={metric.label}>
                 <div className="metric-label">{metric.label}</div>
                 <div className="metric-value">{metric.value || "-"}</div>
@@ -624,10 +630,80 @@ function ProjectionCard(props: {
   }
 
   return (
-    <article className="projection-card">
+    <article className={`projection-card projection-card-${props.kind}`}>
       <h3>{props.title}</h3>
       {content}
     </article>
+  );
+}
+
+type LiveScoreSummary = {
+  away: Team | undefined;
+  home: Team | undefined;
+  awayLabel: string;
+  homeLabel: string;
+  awayScore: string;
+  homeScore: string;
+  total: string;
+  gameTime: string;
+};
+
+function liveScoreSummary(data: Record<string, unknown>): LiveScoreSummary | null {
+  const teams = asRecord(data.teams);
+  if (!teams) {
+    return null;
+  }
+
+  const away = asRecord(teams.away) as Team | undefined;
+  const home = asRecord(teams.home) as Team | undefined;
+  if (!away && !home) {
+    return null;
+  }
+
+  const projection = asRecord(data.live_projection) ?? {};
+  const gameTime = formatGameTimeLeft(data.game_status, projection.model_inputs);
+  return {
+    away,
+    home,
+    awayLabel: displayTeamCode(away, "Away"),
+    homeLabel: displayTeamCode(home, "Home"),
+    awayScore: formatDisplayScore(away?.score),
+    homeScore: formatDisplayScore(home?.score),
+    total: formatScoreTotal(away?.score, home?.score),
+    gameTime: gameTime === "-" ? "" : gameTime
+  };
+}
+
+function LiveScoreFeature(props: { summary: LiveScoreSummary }) {
+  const summary = props.summary;
+  return (
+    <div
+      className="current-score-feature"
+      aria-label={`Current score ${summary.awayLabel} ${summary.awayScore}, ${summary.homeLabel} ${summary.homeScore}, total ${summary.total}`}
+    >
+      <CurrentScoreTeam team={summary.away} label={summary.awayLabel} score={summary.awayScore} />
+
+      <div className="current-score-center">
+        <span className="current-score-tag">Current score</span>
+        <span className="current-score-total">
+          <span>Total</span>
+          <strong>{summary.total}</strong>
+        </span>
+        {summary.gameTime ? <span className="current-score-detail">{summary.gameTime}</span> : null}
+      </div>
+
+      <CurrentScoreTeam team={summary.home} label={summary.homeLabel} score={summary.homeScore} side="home" />
+    </div>
+  );
+}
+
+function CurrentScoreTeam(props: { team: Team | undefined; label: string; score: string; side?: "home" }) {
+  return (
+    <div className={`current-score-team${props.side === "home" ? " home" : ""}`}>
+      <TeamMark team={props.team} fallback={props.label} />
+      <span className="current-score-team-label">{props.label}</span>
+      <strong className="current-score-number">{props.score}</strong>
+    </div>
   );
 }
 
