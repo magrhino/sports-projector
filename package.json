@@ -1,6 +1,6 @@
 {
   "name": "sports-projector",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Read-only sports projection and public market research MCP server",
   "type": "module",
   "main": "dist/index.js",
