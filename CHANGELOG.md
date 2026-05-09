@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.6.0...sports-projector-v0.7.0) (2026-05-09)
+
+
+### Features
+
+* **historical:** add pace efficiency projection model ([d56f0bb](https://github.com/magrhino/sports-projector/commit/d56f0bbce3ff5c9af4b5eac7fd2ccc710ddfa95a))
+
 ## [0.6.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.5.0...sports-projector-v0.6.0) (2026-05-02)
 
 
