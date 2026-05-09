@@ -214,7 +214,12 @@ def main(argv: list[str] | None = None) -> int:
             write_json(evaluation_summary(args.artifact_dir, manifest))
             return 0
     except (ArtifactError, KeyError, TypeError, ValueError, RuntimeError) as exc:
-        write_json({"error": {"type": exc.__class__.__name__, "message": str(exc)}}, stream=sys.stderr)
+        error: dict[str, Any] = {"type": exc.__class__.__name__, "message": str(exc)}
+        if isinstance(exc, ArtifactError):
+            error["code"] = exc.code
+            if exc.details:
+                error["details"] = exc.details
+        write_json({"error": error}, stream=sys.stderr)
         return 1
 
     write_json({"error": {"type": "UnknownCommand", "message": str(args.command)}}, stream=sys.stderr)

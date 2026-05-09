@@ -6,7 +6,11 @@ import type { CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
 import { EventIdSchema } from "../lib/validation.js";
-import { HistoricalProjectionClient, type HistoricalProjectionInput } from "../nba/historical-client.js";
+import {
+  HistoricalProjectionClient,
+  HistoricalProjectionError,
+  type HistoricalProjectionInput
+} from "../nba/historical-client.js";
 import { isLiveModelAccuracyGatePassed, predictLearnedProjection } from "../nba/live-learning.js";
 import type { LiveTrackingStore } from "../nba/live-tracking-store.js";
 import { projectNbaLiveScore } from "../nba/live-tool.js";
@@ -122,7 +126,12 @@ export async function getNbaProjections(
   };
 
   if (parsed.scope === "all") {
-    body.historical_projection = await projectHistoricalSection(game, historicalClient, allowHistoricalFallback);
+    body.historical_projection = await projectHistoricalSection(
+      game,
+      historicalClient,
+      allowHistoricalFallback,
+      liveProjection
+    );
   }
 
   return {
@@ -206,9 +215,10 @@ function recordLiveTrackingSnapshot(liveTrackingStore: LiveTrackingStore | undef
 async function projectHistoricalSection(
   game: EspnNormalizedGame,
   historicalClient: HistoricalProjectionRunner,
-  allowFallback: boolean
+  allowFallback: boolean,
+  liveProjection: ProjectionSection
 ): Promise<ProjectionSection> {
-  const input = historicalInputFromGame(game);
+  const input = historicalInputFromGame(game, marketTotalFromLiveProjection(liveProjection));
   if ("error" in input) {
     return {
       status: "error",
@@ -222,6 +232,12 @@ async function projectHistoricalSection(
       data: await historicalClient.project(input)
     };
   } catch (error) {
+    if (isGuardedHistoricalError(error)) {
+      return {
+        status: "error",
+        error: errorMessage(error)
+      };
+    }
     const fallbackClient = allowFallback ? fallbackWebHistoricalClient() : null;
     if (fallbackClient) {
       try {
@@ -241,8 +257,20 @@ async function projectHistoricalSection(
   }
 }
 
+function isGuardedHistoricalError(error: unknown): boolean {
+  if (!(error instanceof HistoricalProjectionError)) {
+    return false;
+  }
+  return (
+    error.code === "stale_team_snapshot" ||
+    error.code === "future_team_snapshot" ||
+    error.code === "implausible_projection"
+  );
+}
+
 function historicalInputFromGame(
-  game: EspnNormalizedGame
+  game: EspnNormalizedGame,
+  marketTotal: number | null = null
 ): HistoricalProjectionInput | { error: string } {
   const homeTeam = game.teams.home?.name || game.teams.home?.abbreviation;
   const awayTeam = game.teams.away?.name || game.teams.away?.abbreviation;
@@ -259,6 +287,9 @@ function historicalInputFromGame(
     away_team: awayTeam,
     game_date: gameDate
   };
+  if (marketTotal !== null) {
+    input.market_total = marketTotal;
+  }
 
   return input;
 }
@@ -273,11 +304,38 @@ function isoDateFromStartTime(value: string | null): string | null {
     return null;
   }
 
-  return date.toISOString().slice(0, 10);
+  return nbaEasternDate(date);
+}
+
+function nbaEasternDate(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return year && month && day ? `${year}-${month}-${day}` : date.toISOString().slice(0, 10);
+}
+
+function marketTotalFromLiveProjection(liveProjection: ProjectionSection): number | null {
+  if (liveProjection.status !== "ok") {
+    return null;
+  }
+  const data = asRecord(liveProjection.data);
+  const projection = asRecord(data?.live_projection);
+  const marketTotal = projection?.market_total_line;
+  return typeof marketTotal === "number" && Number.isFinite(marketTotal) ? marketTotal : null;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function defaultWebHistoricalClient(): HistoricalProjectionClient {

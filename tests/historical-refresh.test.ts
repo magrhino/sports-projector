@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
 import {
   HistoricalRefreshScheduler,
@@ -89,6 +92,35 @@ describe("HistoricalRefreshScheduler", () => {
     expect(ran).toBe(true);
     expect(runnerConfig?.historicalEnhancementsEnabled).toBe(false);
     expect(scheduler.status().enhancements_enabled).toBe(false);
+  });
+
+  it("surfaces historical artifact snapshot dates from inventory state", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-historical-status-"));
+    try {
+      writeFileSync(
+        path.join(dir, "artifact_manifest.json"),
+        JSON.stringify({
+          team_stats: {
+            latest_snapshot_date: "2026-05-08",
+            date_range: {
+              start: "2025-10-21",
+              end: "2026-05-08"
+            }
+          }
+        })
+      );
+      const scheduler = new HistoricalRefreshScheduler({ ...config(), artifactDir: dir });
+
+      expect(scheduler.status()).toMatchObject({
+        latest_snapshot_date: "2026-05-08",
+        artifact_date_range: {
+          start: "2025-10-21",
+          end: "2026-05-08"
+        }
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

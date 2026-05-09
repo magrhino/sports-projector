@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from .artifacts import ArtifactError, artifact_path, load_json, validate_manifest
 from .calibration import apply_calibration, clamp_probability
-from .features import build_feature_vector
+from .features import build_feature_vector_with_metadata
 from .quantiles import predict_quantiles
 from .training import baseline_feature_for
+
+
+DEFAULT_MAX_SNAPSHOT_AGE_DAYS = 7
+DEFAULT_MIN_PROJECTED_TOTAL = 150.0
+DEFAULT_MAX_PROJECTED_TOTAL = 280.0
+DEFAULT_MAX_MARKET_TOTAL_DIFFERENCE = 35.0
 
 
 class Predictor(Protocol):
@@ -86,7 +93,8 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     root = Path(artifact_dir)
     manifest = validate_manifest(root)
     feature_columns = manifest["feature_columns"]
-    features, feature_values = build_feature_vector(root, manifest, request)
+    features, feature_values, feature_metadata = build_feature_vector_with_metadata(root, manifest, request)
+    snapshot_age_days = validate_snapshot_freshness(manifest, feature_metadata, request)
 
     models = manifest["models"]
     total_model = load_predictor(root, models["total_score"])
@@ -98,6 +106,9 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     if models["home_margin"].get("target_mode") == "market_residual":
         projected_home_margin += baseline_value("home_margin", feature_values, request)
 
+    validate_projected_total(manifest, projected_total, request)
+    market_total_used = numeric_or_none(request.get("market_total"))
+    data_quality = data_quality_for_prediction(market_total_used)
     result = {
         **derive_team_scores(projected_total, projected_home_margin),
         "teams": {
@@ -109,6 +120,9 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
         "uncertainty": collect_uncertainty(models),
         "artifact": {
             "generated_at": manifest.get("generated_at"),
+            "snapshot_date": feature_metadata.get("snapshot_date"),
+            "snapshot_age_days": snapshot_age_days,
+            "market_total_used": market_total_used,
             "seasons": manifest.get("seasons", []),
             "source": manifest.get("source", {}),
             "models": {
@@ -122,6 +136,7 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
                 },
             },
         },
+        "data_quality": data_quality,
         "caveats": [
             "Informational projection only.",
             "Historical model quality depends on local artifact freshness and leak-free feature snapshots.",
@@ -153,9 +168,143 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
                 "total_score": models["total_score"]["type"],
                 "home_margin": models["home_margin"]["type"],
             },
+            "feature_metadata": feature_metadata,
         }
 
     return result
+
+
+def validate_snapshot_freshness(
+    manifest: dict[str, Any],
+    feature_metadata: dict[str, Any],
+    request: dict[str, Any],
+) -> int | None:
+    snapshot_date = feature_metadata.get("snapshot_date")
+    if not isinstance(snapshot_date, str) or not snapshot_date:
+        return None
+    game_date = str(request["game_date"])
+    age_days = days_between_dates(snapshot_date, game_date)
+    if age_days < 0:
+        raise ArtifactError(
+            (
+                f"Historical team snapshot is after requested game date {game_date}: "
+                f"selected snapshot {snapshot_date} is {abs(age_days)} days in the future"
+            ),
+            code="future_team_snapshot",
+            details={
+                "requested_game_date": game_date,
+                "snapshot_date": snapshot_date,
+                "snapshot_age_days": age_days,
+            },
+        )
+    max_age = prediction_guard_number(manifest, "max_snapshot_age_days", DEFAULT_MAX_SNAPSHOT_AGE_DAYS)
+    if age_days > max_age:
+        raise ArtifactError(
+            (
+                f"Historical team snapshot is stale for requested game date {game_date}: "
+                f"selected snapshot {snapshot_date} is {age_days} days old; max allowed is {int(max_age)} days"
+            ),
+            code="stale_team_snapshot",
+            details={
+                "requested_game_date": game_date,
+                "snapshot_date": snapshot_date,
+                "snapshot_age_days": age_days,
+                "max_snapshot_age_days": int(max_age),
+            },
+        )
+    return age_days
+
+
+def validate_projected_total(
+    manifest: dict[str, Any],
+    projected_total: float,
+    request: dict[str, Any],
+) -> None:
+    min_total = prediction_guard_number(manifest, "min_projected_total", DEFAULT_MIN_PROJECTED_TOTAL)
+    max_total = prediction_guard_number(manifest, "max_projected_total", DEFAULT_MAX_PROJECTED_TOTAL)
+    rounded_total = round(float(projected_total), 1)
+    if not math.isfinite(projected_total) or projected_total < min_total or projected_total > max_total:
+        raise ArtifactError(
+            (
+                f"Historical projected total {rounded_total} is outside plausible NBA range "
+                f"{round(min_total, 1)}-{round(max_total, 1)}"
+            ),
+            code="implausible_projection",
+            details={
+                "projected_total": rounded_total,
+                "min_projected_total": float(min_total),
+                "max_projected_total": float(max_total),
+            },
+        )
+
+    market_total = numeric_or_none(request.get("market_total"))
+    if market_total is None:
+        return
+    max_difference = prediction_guard_number(
+        manifest,
+        "max_market_total_difference",
+        DEFAULT_MAX_MARKET_TOTAL_DIFFERENCE,
+    )
+    difference = projected_total - market_total
+    if abs(difference) > max_difference:
+        raise ArtifactError(
+            (
+                f"Historical projected total {rounded_total} differs from market total "
+                f"{round(market_total, 1)} by {round(difference, 1)} points; "
+                f"max allowed difference is {round(max_difference, 1)}"
+            ),
+            code="implausible_projection",
+            details={
+                "projected_total": rounded_total,
+                "market_total": round(market_total, 1),
+                "difference_to_market_total": round(difference, 1),
+                "max_market_total_difference": float(max_difference),
+            },
+        )
+
+
+def data_quality_for_prediction(market_total: float | None) -> dict[str, Any]:
+    if market_total is None:
+        return {
+            "status": "missing_market_context",
+            "reasons": ["market_total was not supplied; projection is not anchored to the current total market."],
+        }
+    return {
+        "status": "ok",
+        "reasons": [],
+    }
+
+
+def prediction_guard_number(manifest: dict[str, Any], key: str, default: float) -> float:
+    guards = manifest.get("prediction_guards")
+    if isinstance(guards, dict):
+        value = numeric_or_none(guards.get(key))
+        if value is not None:
+            return value
+    return default
+
+
+def days_between_dates(start: str, end: str) -> int:
+    try:
+        start_date = datetime.strptime(start, "%Y-%m-%d")
+        end_date = datetime.strptime(end, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ArtifactError(
+            "Unable to compare historical snapshot date and requested game date",
+            code="invalid_snapshot_date",
+            details={"snapshot_date": start, "requested_game_date": end},
+        ) from exc
+    return (end_date - start_date).days
+
+
+def numeric_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def quantile_output_for_prediction(

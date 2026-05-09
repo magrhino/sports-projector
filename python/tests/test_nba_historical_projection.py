@@ -261,6 +261,118 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertNotIn("stake", serialized)
             self.assertNotIn("wager", serialized)
 
+    def test_predict_rejects_stale_sqlite_team_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(
+                root,
+                snapshot_date="2025-10-08",
+                projected_total=270,
+                home_team="Minnesota Timberwolves",
+                away_team="San Antonio Spurs",
+            )
+
+            with self.assertRaises(ArtifactError) as caught:
+                predict_from_artifacts(
+                    root,
+                    {
+                        "home_team": "Minnesota Timberwolves",
+                        "away_team": "San Antonio Spurs",
+                        "game_date": "2026-05-08",
+                        "market_total": 216.5,
+                    },
+                )
+
+            self.assertEqual(caught.exception.code, "stale_team_snapshot")
+            self.assertIn("2026-05-08", str(caught.exception))
+            self.assertIn("2025-10-08", str(caught.exception))
+            self.assertEqual(caught.exception.details["snapshot_age_days"], 212)
+
+    def test_predict_rejects_future_sqlite_team_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(
+                root,
+                snapshot_date="2026-05-09",
+                projected_total=218,
+                configured_table="2026-05-09",
+            )
+
+            with self.assertRaises(ArtifactError) as caught:
+                predict_from_artifacts(
+                    root,
+                    {
+                        "home_team": "Boston Celtics",
+                        "away_team": "New York Knicks",
+                        "game_date": "2026-05-08",
+                    },
+                )
+
+            self.assertEqual(caught.exception.code, "future_team_snapshot")
+            self.assertIn("after requested game date", str(caught.exception))
+            self.assertEqual(caught.exception.details["snapshot_age_days"], -1)
+
+    def test_predict_allows_fresh_sqlite_snapshot_and_exposes_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(root, snapshot_date="2026-05-07", projected_total=218)
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-05-08",
+                    "include_debug": True,
+                },
+            )
+
+            self.assertEqual(projection["projected_total"], 218.0)
+            self.assertEqual(projection["artifact"]["snapshot_date"], "2026-05-07")
+            self.assertEqual(projection["artifact"]["snapshot_age_days"], 1)
+            self.assertIsNone(projection["artifact"]["market_total_used"])
+            self.assertEqual(projection["data_quality"]["status"], "missing_market_context")
+            self.assertEqual(projection["debug"]["feature_metadata"]["snapshot_date"], "2026-05-07")
+            self.assertNotIn(tmpdir, json.dumps(projection["debug"]))
+
+    def test_predict_rejects_total_outside_plausible_range(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(root, snapshot_date="2026-05-08", projected_total=281)
+
+            with self.assertRaises(ArtifactError) as caught:
+                predict_from_artifacts(
+                    root,
+                    {
+                        "home_team": "Boston Celtics",
+                        "away_team": "New York Knicks",
+                        "game_date": "2026-05-08",
+                    },
+                )
+
+            self.assertEqual(caught.exception.code, "implausible_projection")
+            self.assertIn("outside plausible NBA range", str(caught.exception))
+
+    def test_predict_rejects_large_market_total_divergence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(root, snapshot_date="2026-05-08", projected_total=270)
+
+            with self.assertRaises(ArtifactError) as caught:
+                predict_from_artifacts(
+                    root,
+                    {
+                        "home_team": "Boston Celtics",
+                        "away_team": "New York Knicks",
+                        "game_date": "2026-05-08",
+                        "market_total": 216.5,
+                    },
+                )
+
+            self.assertEqual(caught.exception.code, "implausible_projection")
+            self.assertIn("differs from market total", str(caught.exception))
+            self.assertEqual(caught.exception.details["difference_to_market_total"], 53.5)
+
     def test_predict_reconstructs_market_residual_models(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -303,6 +415,8 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(result["projected_total"], 223.5)
             self.assertEqual(result["projected_home_margin"], 3.5)
             self.assertEqual(result["artifact"]["models"]["total_score"]["target_mode"], "market_residual")
+            self.assertEqual(result["artifact"]["market_total_used"], 221.5)
+            self.assertEqual(result["data_quality"]["status"], "ok")
 
     def test_prediction_adds_optional_probabilities_and_quantiles(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -935,6 +1049,62 @@ class HistoricalProjectionTests(unittest.TestCase):
 
             self.assertEqual(features, [3.0, 4.0])
             self.assertEqual(feature_values["PRIOR_GAMES"], 3.0)
+
+    def test_artifact_inventory_reports_latest_snapshot_date(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(root, snapshot_date="2026-05-08", projected_total=218)
+
+            inventory = build_artifact_inventory(root)
+
+            self.assertEqual(inventory["team_stats"]["latest_snapshot_date"], "2026-05-08")
+            self.assertEqual(inventory["team_stats"]["date_range"]["end"], "2026-05-08")
+
+    def write_sqlite_projection_artifact(
+        self,
+        root: Path,
+        snapshot_date: str,
+        projected_total: float,
+        home_team: str = "Boston Celtics",
+        away_team: str = "New York Knicks",
+        configured_table: str | None = None,
+    ) -> None:
+        (root / "models").mkdir()
+        self.write_json(root / "models" / "total.json", {"intercept": projected_total, "coefficients": [0, 0]})
+        self.write_json(root / "models" / "margin.json", {"intercept": 0, "coefficients": [0, 0]})
+        with sqlite3.connect(root / "team_stats.sqlite") as connection:
+            write_sqlite_rows(
+                connection,
+                snapshot_date,
+                [
+                    {"TEAM_NAME": home_team, "PRIOR_GAMES": 1.0},
+                    {"TEAM_NAME": away_team, "PRIOR_GAMES": 1.0},
+                ],
+            )
+        team_stats = {"type": "sqlite", "path": "team_stats.sqlite"}
+        if configured_table is not None:
+            team_stats["table"] = configured_table
+        self.write_json(
+            root / "manifest.json",
+            {
+                "generated_at": "2026-05-08T00:00:00+00:00",
+                "feature_columns": ["PRIOR_GAMES", "PRIOR_GAMES.1"],
+                "feature_defaults": {"PRIOR_GAMES": 1, "PRIOR_GAMES.1": 1},
+                "team_stats": team_stats,
+                "models": {
+                    "total_score": {
+                        "type": "linear_json",
+                        "path": "models/total.json",
+                        "target_mode": "direct",
+                    },
+                    "home_margin": {
+                        "type": "linear_json",
+                        "path": "models/margin.json",
+                        "target_mode": "direct",
+                    },
+                },
+            },
+        )
 
     def write_json(self, path: Path, value):
         with path.open("w", encoding="utf-8") as handle:

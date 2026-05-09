@@ -126,6 +126,11 @@ export type HistoricalRefreshStatusPayload = {
   lookahead_days?: number;
   event_ids?: string[];
   artifact_dir?: string;
+  latest_snapshot_date?: string | null;
+  artifact_date_range?: {
+    start: string;
+    end: string;
+  } | null;
   last_started_at?: string | null;
   last_finished_at?: string | null;
   last_success_at?: string | null;

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   historicalProjectionConfigFromEnv,
@@ -26,6 +27,11 @@ export interface HistoricalRefreshStatus {
   lookahead_days: number;
   event_ids: string[];
   artifact_dir: string;
+  latest_snapshot_date?: string | null;
+  artifact_date_range?: {
+    start: string;
+    end: string;
+  } | null;
   last_started_at: string | null;
   last_finished_at: string | null;
   last_success_at: string | null;
@@ -96,6 +102,7 @@ export class HistoricalRefreshScheduler {
   }
 
   status(): HistoricalRefreshStatus {
+    const artifactSummary = historicalArtifactSummary(this.config.artifactDir);
     return {
       enabled: this.config.enabled,
       running: this.running,
@@ -105,6 +112,8 @@ export class HistoricalRefreshScheduler {
       lookahead_days: this.config.lookaheadDays,
       event_ids: this.config.eventIds,
       artifact_dir: this.config.artifactDir,
+      latest_snapshot_date: artifactSummary.latestSnapshotDate,
+      artifact_date_range: artifactSummary.dateRange,
       last_started_at: this.lastStartedAt,
       last_finished_at: this.lastFinishedAt,
       last_success_at: this.lastSuccessAt,
@@ -119,6 +128,42 @@ export class HistoricalRefreshScheduler {
     } catch {
       return DEFAULT_SETTINGS;
     }
+  }
+}
+
+function historicalArtifactSummary(artifactDir: string): {
+  latestSnapshotDate: string | null;
+  dateRange: { start: string; end: string } | null;
+} {
+  const statePath = path.join(artifactDir, "artifact_manifest.json");
+  if (!existsSync(statePath)) {
+    return { latestSnapshotDate: null, dateRange: null };
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { latestSnapshotDate: null, dateRange: null };
+    }
+    const teamStats = (parsed as Record<string, unknown>).team_stats;
+    if (!teamStats || typeof teamStats !== "object" || Array.isArray(teamStats)) {
+      return { latestSnapshotDate: null, dateRange: null };
+    }
+    const record = teamStats as Record<string, unknown>;
+    const latestSnapshotDate =
+      typeof record.latest_snapshot_date === "string" ? record.latest_snapshot_date : null;
+    const dateRange = record.date_range;
+    if (!dateRange || typeof dateRange !== "object" || Array.isArray(dateRange)) {
+      return { latestSnapshotDate, dateRange: null };
+    }
+    const rangeRecord = dateRange as Record<string, unknown>;
+    const start = typeof rangeRecord.start === "string" ? rangeRecord.start : null;
+    const end = typeof rangeRecord.end === "string" ? rangeRecord.end : null;
+    return {
+      latestSnapshotDate: latestSnapshotDate ?? end,
+      dateRange: start && end ? { start, end } : null
+    };
+  } catch {
+    return { latestSnapshotDate: null, dateRange: null };
   }
 }
 

@@ -10,7 +10,7 @@ import { createHttpHandler } from "../src/http/index.js";
 import type { HistoricalRefreshHttpContext } from "../src/http/historical-refresh.js";
 import { HistoricalRefreshScheduler } from "../src/nba/historical-refresh.js";
 import type { LiveTrackingHttpContext } from "../src/http/live-tracking.js";
-import { HistoricalProjectionClient } from "../src/nba/historical-client.js";
+import { HistoricalProjectionClient, HistoricalProjectionError } from "../src/nba/historical-client.js";
 import { SettingsStore } from "../src/lib/settings.js";
 import { LiveTrackingStore } from "../src/nba/live-tracking-store.js";
 
@@ -90,9 +90,101 @@ describe("createHttpHandler", () => {
     expect(historicalInputs[0]).toMatchObject({
       home_team: "Boston Celtics",
       away_team: "New York Knicks",
-      game_date: "2026-04-25"
+      game_date: "2026-04-25",
+      market_total: 203
     });
+  });
+
+  it("omits historical market total when no live market line is available", async () => {
+    const historicalInputs: Record<string, unknown>[] = [];
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+        kalshiClient: kalshiClientWithMarkets([]),
+        historicalClient: historicalClient((input) => {
+          historicalInputs.push(input);
+          return {
+            teams: {
+              home: input.home_team,
+              away: input.away_team
+            },
+            game_date: input.game_date,
+            projected_home_score: 114,
+            projected_away_score: 109,
+            projected_total: 223,
+            projected_home_margin: 5,
+            data_quality: {
+              status: "missing_market_context",
+              reasons: ["market_total was not supplied."]
+            }
+          };
+        })
+      }),
+      "/api/nba/projections?event_id=401"
+    );
+
+    const payload = JSON.parse(response.body) as ProjectionResponse;
+    expect(response.statusCode).toBe(200);
+    expect(payload.live_projection.data?.live_projection.market_total_line).toBeNull();
+    expect(payload.historical_projection?.status).toBe("ok");
     expect(historicalInputs[0]).not.toHaveProperty("market_total");
+  });
+
+  it("preserves stale historical artifact errors instead of displaying fallback projections", async () => {
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+        kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+        historicalClient: new HistoricalProjectionClient({
+          runCommand: async () => {
+            throw new HistoricalProjectionError(
+              "Historical team snapshot is stale for requested game date 2026-04-25",
+              "stale_team_snapshot"
+            );
+          }
+        })
+      }),
+      "/api/nba/projections?event_id=401"
+    );
+
+    const payload = JSON.parse(response.body) as ProjectionResponse;
+    expect(response.statusCode).toBe(200);
+    expect(payload.historical_projection?.status).toBe("error");
+    expect(payload.historical_projection?.error).toContain("stale");
+  });
+
+  it("uses the NBA Eastern game date for late UTC evening starts", async () => {
+    const historicalInputs: Record<string, unknown>[] = [];
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(
+          espnSummaryFixture({
+            eventId: "401",
+            startTime: "2026-05-09T01:30:00Z"
+          })
+        ),
+        kalshiClient: kalshiClientWithMarkets([]),
+        historicalClient: historicalClient((input) => {
+          historicalInputs.push(input);
+          return {
+            teams: {
+              home: input.home_team,
+              away: input.away_team
+            },
+            game_date: input.game_date,
+            projected_home_score: 110,
+            projected_away_score: 103,
+            projected_total: 213
+          };
+        })
+      }),
+      "/api/nba/projections?event_id=401"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(historicalInputs[0]).toMatchObject({
+      game_date: "2026-05-08"
+    });
   });
 
   it("skips historical projection for live-only refreshes", async () => {
@@ -756,6 +848,7 @@ interface ProjectionResponse {
   };
   historical_projection?: {
     status: "ok" | "error";
+    error?: string;
   };
 }
 
@@ -800,6 +893,7 @@ function espnSummaryFixture(input: {
   homeScore?: string | null;
   awayScore?: string | null;
   completed?: boolean;
+  startTime?: string;
 }) {
   const completed = input.completed ?? false;
   return {
@@ -809,7 +903,7 @@ function espnSummaryFixture(input: {
       shortName: "NY @ BOS",
       competitions: [
         {
-          date: "2026-04-25T23:00:00Z",
+          date: input.startTime ?? "2026-04-25T23:00:00Z",
           status: {
             displayClock: completed ? "0.0" : "9:25",
             period: 4,

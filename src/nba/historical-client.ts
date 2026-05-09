@@ -114,6 +114,17 @@ export async function runHistoricalPythonCommand(
       },
       (error, stdout, stderr) => {
         if (error) {
+          const pythonError = parseHistoricalError(stderr);
+          if (pythonError) {
+            reject(
+              new HistoricalProjectionError(pythonError.message, pythonError.code, {
+                error: pythonError.error,
+                stderr,
+                stdout
+              })
+            );
+            return;
+          }
           reject(
             new HistoricalProjectionError("Historical projection command failed", "command_failed", {
               message: error.message,
@@ -129,6 +140,37 @@ export async function runHistoricalPythonCommand(
 
     child.stdin?.end(JSON.stringify(input));
   });
+}
+
+interface ParsedHistoricalError {
+  code: string;
+  message: string;
+  error: unknown;
+}
+
+function parseHistoricalError(stderr: string): ParsedHistoricalError | null {
+  try {
+    const parsed = JSON.parse(stderr) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const error = (parsed as Record<string, unknown>).error;
+    if (!error || typeof error !== "object" || Array.isArray(error)) {
+      return null;
+    }
+    const errorRecord = error as Record<string, unknown>;
+    const message = typeof errorRecord.message === "string" ? errorRecord.message : null;
+    if (!message) {
+      return null;
+    }
+    return {
+      code: typeof errorRecord.code === "string" ? errorRecord.code : "python_error",
+      message,
+      error
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function parseHistoricalJson(stdout: string): Record<string, unknown> {

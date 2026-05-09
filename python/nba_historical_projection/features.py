@@ -54,6 +54,15 @@ def build_feature_vector(
     manifest: dict[str, Any],
     request: dict[str, Any],
 ) -> tuple[list[float], dict[str, float]]:
+    features, feature_values, _metadata = build_feature_vector_with_metadata(artifact_dir, manifest, request)
+    return features, feature_values
+
+
+def build_feature_vector_with_metadata(
+    artifact_dir: str | Path,
+    manifest: dict[str, Any],
+    request: dict[str, Any],
+) -> tuple[list[float], dict[str, float], dict[str, Any]]:
     root = Path(artifact_dir)
     feature_columns = manifest["feature_columns"]
     feature_defaults = manifest.get("feature_defaults", {})
@@ -63,7 +72,7 @@ def build_feature_vector(
     home_team = normalize_team_name(str(request["home_team"]))
     away_team = normalize_team_name(str(request["away_team"]))
     game_date = str(request["game_date"])
-    home_stats, away_stats = load_matchup_stats(root, manifest, game_date, home_team, away_team)
+    home_stats, away_stats, metadata = load_matchup_stats(root, manifest, game_date, home_team, away_team)
 
     feature_values: dict[str, float] = {}
     missing: list[str] = []
@@ -80,7 +89,7 @@ def build_feature_vector(
             + ", ".join(missing[:20])
         )
 
-    return [feature_values[column] for column in feature_columns], feature_values
+    return [feature_values[column] for column in feature_columns], feature_values, metadata
 
 
 def resolve_feature_value(
@@ -216,15 +225,17 @@ def load_matchup_stats(
     game_date: str,
     home_team: str,
     away_team: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     team_stats_config = manifest.get("team_stats")
     if team_stats_config is None:
-        return {}, {}
+        return {}, {}, {}
 
     stats_type = team_stats_config.get("type", "json")
     if stats_type == "json":
         teams = load_json_team_stats(root, team_stats_config, game_date)
-        return team_stats_for_name(teams, home_team), team_stats_for_name(teams, away_team)
+        return team_stats_for_name(teams, home_team), team_stats_for_name(teams, away_team), {
+            "team_stats_type": "json",
+        }
     if stats_type == "sqlite":
         return load_sqlite_team_stats(root, team_stats_config, game_date, home_team, away_team)
     raise ArtifactError(f"Unsupported team_stats.type: {stats_type}")
@@ -265,7 +276,7 @@ def load_sqlite_team_stats(
     game_date: str,
     home_team: str,
     away_team: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     path = artifact_path(root, config["path"])
     if not path.is_file():
         raise ArtifactError(f"Team stats SQLite database is missing: {path}")
@@ -286,8 +297,13 @@ def load_sqlite_team_stats(
         for row in rows
         if "TEAM_NAME" in row.keys() and row["TEAM_NAME"] is not None
     }
+    metadata = {
+        "team_stats_type": "sqlite",
+        "snapshot_date": table if is_iso_date_name(table) else None,
+        "requested_game_date": game_date,
+    }
     if by_name:
-        return team_stats_for_name(by_name, home_team), team_stats_for_name(by_name, away_team)
+        return team_stats_for_name(by_name, home_team), team_stats_for_name(by_name, away_team), metadata
 
     home_index = TEAM_INDEX_CURRENT.get(home_team)
     away_index = TEAM_INDEX_CURRENT.get(away_team)
@@ -295,7 +311,7 @@ def load_sqlite_team_stats(
         raise ArtifactError("Unable to resolve team index for SQLite row-based team stats")
     if max(home_index, away_index) >= len(rows):
         raise ArtifactError(f"Team stats table {table} has fewer rows than expected")
-    return dict(rows[home_index]), dict(rows[away_index])
+    return dict(rows[home_index]), dict(rows[away_index]), metadata
 
 
 def select_snapshot_table(connection: sqlite3.Connection, game_date: str) -> str:

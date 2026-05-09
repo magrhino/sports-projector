@@ -11,6 +11,16 @@ from typing import Any
 class ArtifactError(ValueError):
     """Raised when local historical projection artifacts are missing or invalid."""
 
+    def __init__(
+        self,
+        message: str,
+        code: str = "artifact_error",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
 
 STATE_MANIFEST_NAME = "artifact_manifest.json"
 IMPORT_LOG_NAME = "artifact_import_log.jsonl"
@@ -198,9 +208,11 @@ def sqlite_summary(path: Path) -> dict[str, Any]:
     summary["tables_sample"] = tables[:20]
     summary["date_table_count"] = len(date_tables)
     if date_tables:
+        latest = max(date_tables)
+        summary["latest_snapshot_date"] = latest
         summary["date_range"] = {
             "start": min(date_tables),
-            "end": max(date_tables),
+            "end": latest,
         }
     return summary
 
