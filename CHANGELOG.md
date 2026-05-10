@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.0...sports-projector-v0.9.1) (2026-05-10)
+
+
+### Bug Fixes
+
+* **historical:** report promoted refresh artifact paths ([052cc15](https://github.com/magrhino/sports-projector/commit/052cc15692c5c2e538abaaab3bf73442ebaf5550))
+* **historical:** stabilize nba projection training ([2e9a105](https://github.com/magrhino/sports-projector/commit/2e9a105695970e15333e17c877ba971bf77cbb62))
+* **live-tracking:** prevent corrupt status storage crashes ([f968103](https://github.com/magrhino/sports-projector/commit/f9681037a4573e5feb1f59611ea2246c536bc8d8))
+* **nba:** recover corrupt live tracking database on startup ([b094d8d](https://github.com/magrhino/sports-projector/commit/b094d8df76ef92fb421870da5ec2242cea886ef9))
+
 ## [0.9.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.8.0...sports-projector-v0.9.0) (2026-05-10)
 
 
