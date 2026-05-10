@@ -18,49 +18,35 @@ export function getLiveTrackingStatus(context: LiveTrackingHttpContext | null): 
   if (!context) {
     return {
       status: 200,
-      body: {
-        running: false,
-        polling: false,
-        last_poll_at: null,
-        last_error: null,
-        tracker: {
-          enabled: false,
-          games: {
-            tracked: 0,
-            live: 0,
-            finalized: 0
-          },
-          snapshots: 0,
-          training: {
-            snapshots: 0,
-            effective_snapshots: 0,
-            games: 0,
-            min_snapshots: null,
-            ready: false
-          },
-          latest_snapshot: null,
-          model: null
-        },
-        auto_training: disabledAutoTrainingStatus()
-      }
+      body: liveTrackingUnavailableStatus(false, null)
     };
   }
 
-  const body = context.tracker?.status() ?? {
-    running: false,
-    polling: false,
-    last_poll_at: null,
-    last_error: null,
-    tracker: context.store.status(context.config.enabled, context.config.minSnapshots)
-  };
+  try {
+    const body = context.tracker?.status() ?? {
+      running: false,
+      polling: false,
+      last_poll_at: null,
+      last_error: null,
+      tracker: context.store.status(context.config.enabled, context.config.minSnapshots)
+    };
 
-  return {
-    status: 200,
-    body: {
-      ...body,
-      auto_training: context.trainer?.status() ?? disabledAutoTrainingStatus()
-    }
-  };
+    return {
+      status: 200,
+      body: {
+        ...body,
+        auto_training: context.trainer?.status() ?? disabledAutoTrainingStatus()
+      }
+    };
+  } catch (error) {
+    return {
+      status: 200,
+      body: {
+        ...liveTrackingUnavailableStatus(context.config.enabled, error, context.config.minSnapshots),
+        auto_training: context.trainer?.status() ?? disabledAutoTrainingStatus()
+      }
+    };
+  }
 }
 
 export function trainLiveModel(
@@ -96,10 +82,54 @@ export function trainLiveModel(
       status: 400,
       body: {
         error: error instanceof Error ? error.message : String(error),
-        tracker: context.store.status(context.config.enabled, context.config.minSnapshots)
+        tracker: safeStoreStatus(context, error)
       }
     };
   }
+}
+
+function safeStoreStatus(context: LiveTrackingHttpContext, error: unknown): unknown {
+  try {
+    return context.store.status(context.config.enabled, context.config.minSnapshots);
+  } catch {
+    return liveTrackingUnavailableStatus(context.config.enabled, error, context.config.minSnapshots).tracker;
+  }
+}
+
+function liveTrackingUnavailableStatus(
+  enabled: boolean,
+  error: unknown,
+  minSnapshots: number | null = null
+) {
+  return {
+    running: false,
+    polling: false,
+    last_poll_at: null,
+    last_error: error ? `Live tracking storage unavailable: ${errorMessage(error)}` : null,
+    tracker: {
+      enabled,
+      games: {
+        tracked: 0,
+        live: 0,
+        finalized: 0
+      },
+      snapshots: 0,
+      training: {
+        snapshots: 0,
+        effective_snapshots: 0,
+        games: 0,
+        min_snapshots: minSnapshots,
+        ready: false
+      },
+      latest_snapshot: null,
+      model: null
+    },
+    auto_training: disabledAutoTrainingStatus()
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isAuthorizedTrainRequest(request: IncomingMessage, adminToken: string | null | undefined): boolean {

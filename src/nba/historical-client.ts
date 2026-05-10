@@ -73,13 +73,13 @@ export function historicalProjectionConfigFromEnv(env: NodeJS.ProcessEnv): Histo
   };
 }
 
-export function timeoutMsFromEnv(raw: string | undefined): number {
+export function timeoutMsFromEnv(raw: string | undefined, fallback = 30000): number {
   if (!raw) {
-    return 30000;
+    return fallback;
   }
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) {
-    return 30000;
+    return fallback;
   }
   return Math.min(120000, Math.max(1000, Math.floor(parsed)));
 }

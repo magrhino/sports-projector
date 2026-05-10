@@ -22,6 +22,7 @@ describe("historical refresh config", () => {
     });
 
     expect(config.enabled).toBe(true);
+    expect(config.timeoutMs).toBe(120000);
     expect(config.recentDays).toBe(4);
     expect(config.lookaheadDays).toBe(1);
     expect(config.eventIds).toEqual(["2467180", "2466030"]);
@@ -36,6 +37,19 @@ describe("historical refresh config", () => {
     });
 
     expect(config.enabled).toBe(false);
+  });
+
+  it("allows refresh imports to use a dedicated timeout override", () => {
+    const sharedTimeout = historicalRefreshConfigFromEnv({
+      SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS: "2000"
+    });
+    const refreshTimeout = historicalRefreshConfigFromEnv({
+      SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS: "2000",
+      SPORTS_PROJECTOR_HISTORICAL_REFRESH_TIMEOUT_MS: "90000"
+    });
+
+    expect(sharedTimeout.timeoutMs).toBe(2000);
+    expect(refreshTimeout.timeoutMs).toBe(90000);
   });
 });
 

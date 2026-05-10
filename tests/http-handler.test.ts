@@ -285,6 +285,31 @@ describe("createHttpHandler", () => {
     expect(payload.tracker.training.snapshots).toBe(0);
   });
 
+  it("returns a live tracking storage error instead of crashing when status reads fail", async () => {
+    const context = createLiveTrackingContext();
+    context.store.status = vi.fn(() => {
+      throw new Error("database disk image is malformed");
+    }) as LiveTrackingStore["status"];
+    try {
+      const response = await callHandler(
+        createHttpHandler({
+          liveTrackingContext: context
+        }),
+        "/api/nba/live-tracking/status"
+      );
+
+      const payload = JSON.parse(response.body);
+      expect(response.statusCode).toBe(200);
+      expect(payload.last_error).toMatch(/database disk image is malformed/);
+      expect(payload.tracker.enabled).toBe(true);
+      expect(payload.tracker.training.ready).toBe(false);
+      expect(payload.auto_training.enabled).toBe(false);
+    } finally {
+      context.store.close();
+      context.cleanup();
+    }
+  });
+
   it("returns historical refresh status", async () => {
     const context = createHistoricalRefreshContext();
     const response = await callHandler(

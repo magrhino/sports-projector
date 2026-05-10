@@ -337,6 +337,7 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 | `SPORTS_PROJECTOR_HISTORICAL_ARTIFACT_DIR` | `data/historical` under the root | Artifact directory containing `manifest.json` and model files |
 | `SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS` | `30000` | Historical command timeout, clamped from 1000 to 120000 ms |
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED` | `true` | Enables scheduled SportsDB historical artifact refreshes |
+| `SPORTS_PROJECTOR_HISTORICAL_REFRESH_TIMEOUT_MS` | `120000` | Scheduled historical refresh timeout; falls back to `SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS` when set, clamped from 1000 to 120000 ms |
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_INTERVAL_SECONDS` | `3600` | Historical refresh interval, clamped from 60 to 86400 seconds |
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS` | `3` | Past day window included in scheduled imports |
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS` | `2` | Future day window included for prediction snapshots |

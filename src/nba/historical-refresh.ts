@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   historicalProjectionConfigFromEnv,
+  timeoutMsFromEnv,
   type HistoricalProjectionConfig,
   type HistoricalCommandResult
 } from "./historical-client.js";
@@ -47,6 +48,7 @@ export type HistoricalRefreshRunner = (config: HistoricalRefreshConfig) => Promi
 export type HistoricalSettingsReader = () => SportsProjectorSettings;
 
 const ENHANCED_HISTORICAL_QUANTILES = "0.05,0.10,0.25,0.50,0.75,0.90,0.95";
+const DEFAULT_HISTORICAL_REFRESH_TIMEOUT_MS = 120000;
 
 export class HistoricalRefreshScheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -177,6 +179,10 @@ export function historicalRefreshConfigFromEnv(env: NodeJS.ProcessEnv = process.
   const historical = historicalProjectionConfigFromEnv(env);
   return {
     ...historical,
+    timeoutMs: timeoutMsFromEnv(
+      env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_TIMEOUT_MS ?? env.SPORTS_PROJECTOR_HISTORICAL_TIMEOUT_MS,
+      DEFAULT_HISTORICAL_REFRESH_TIMEOUT_MS
+    ),
     enabled: parseBoolean(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED, true),
     intervalSeconds: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_INTERVAL_SECONDS, 3600, 60, 86400),
     recentDays: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS, 3, 0, 30),
@@ -210,7 +216,10 @@ export async function runHistoricalRefreshCommand(
       },
       (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(`Historical refresh command failed: ${error.message}${stderr ? `: ${stderr}` : ""}`));
+          const message = error.killed
+            ? `timed out after ${config.timeoutMs}ms`
+            : error.message;
+          reject(new Error(`Historical refresh command failed: ${message}${stderr ? `: ${stderr}` : ""}`));
           return;
         }
         resolve({ stdout, stderr });
