@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.8.0...sports-projector-v0.9.0) (2026-05-10)
+
+
+### Features
+
+* **historical:** auto-import Kalshi market totals ([3054378](https://github.com/magrhino/sports-projector/commit/30543786ea5022c4343042a7b5a6656d011f1c86))
+
 ## [0.8.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.7.0...sports-projector-v0.8.0) (2026-05-10)
 
 
