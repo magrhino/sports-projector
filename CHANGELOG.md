@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.7.0...sports-projector-v0.8.0) (2026-05-10)
+
+
+### Features
+
+* **web:** track custom live over total ([3896af7](https://github.com/magrhino/sports-projector/commit/3896af748f2eaa190dd1c5a8b575ab2863446ed5))
+
 ## [0.7.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.6.0...sports-projector-v0.7.0) (2026-05-09)
 
 
