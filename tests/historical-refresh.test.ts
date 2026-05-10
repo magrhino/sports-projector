@@ -17,7 +17,8 @@ describe("historical refresh config", () => {
       SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS: "4",
       SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS: "1",
       SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS: "2467180, 2466030",
-      SPORTS_PROJECTOR_SPORTSDB_API_KEY: "private"
+      SPORTS_PROJECTOR_SPORTSDB_API_KEY: "private",
+      SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES: "7"
     });
 
     expect(config.enabled).toBe(true);
@@ -25,6 +26,8 @@ describe("historical refresh config", () => {
     expect(config.lookaheadDays).toBe(1);
     expect(config.eventIds).toEqual(["2467180", "2466030"]);
     expect(config.sportsDbApiKey).toBe("private");
+    expect(config.marketTotalsEnabled).toBe(true);
+    expect(config.marketTotalsMaxPages).toBe(7);
   });
 
   it("can be disabled by env", () => {
@@ -39,7 +42,19 @@ describe("historical refresh config", () => {
 describe("HistoricalRefreshScheduler", () => {
   it("records successful refresh status", async () => {
     const scheduler = new HistoricalRefreshScheduler(config(), async () => ({
-      stdout: JSON.stringify({ ok: true, events: 12 }),
+      stdout: JSON.stringify({
+        ok: true,
+        events: 12,
+        market_line_source_counts: { kalshi_current: 3 },
+        market_line_auto: {
+          matched_rows: 3,
+          ambiguous_matches: 1,
+          skipped_markets: 2,
+          sources: {
+            kalshi_current: { pages: 1, markets: 5, truncated: false }
+          }
+        }
+      }),
       stderr: ""
     }));
 
@@ -49,7 +64,16 @@ describe("HistoricalRefreshScheduler", () => {
     expect(ran).toBe(true);
     expect(status.last_error).toBeNull();
     expect(status.last_success_at).toEqual(expect.any(String));
-    expect(status.last_result).toMatchObject({ ok: true, events: 12 });
+    expect(status.last_result).toMatchObject({
+      ok: true,
+      events: 12,
+      market_line_source_counts: { kalshi_current: 3 },
+      market_line_auto: {
+        matched_rows: 3,
+        ambiguous_matches: 1,
+        skipped_markets: 2
+      }
+    });
   });
 
   it("skips overlapping refreshes", async () => {
@@ -151,6 +175,9 @@ describe("historicalRefreshArgs", () => {
       "--skill-features",
       "score-based",
       "--experimental-market-decorrelation",
+      "--auto-market-lines",
+      "--market-lines-max-pages",
+      "10",
       "--event-id",
       "2467180"
     ]);
@@ -169,9 +196,16 @@ describe("historicalRefreshArgs", () => {
       "3",
       "--lookahead-days",
       "2",
+      "--auto-market-lines",
+      "--market-lines-max-pages",
+      "10",
       "--event-id",
       "2467180"
     ]);
+  });
+
+  it("can disable automatic market total imports", () => {
+    expect(historicalRefreshArgs({ ...config(), marketTotalsEnabled: false })).not.toContain("--auto-market-lines");
   });
 });
 
@@ -183,6 +217,8 @@ function config(): HistoricalRefreshConfig {
     lookaheadDays: 2,
     eventIds: ["2467180"],
     sportsDbApiKey: "123",
+    marketTotalsEnabled: true,
+    marketTotalsMaxPages: 10,
     python: "python3",
     root: "/repo",
     artifactDir: "/repo/data/historical",

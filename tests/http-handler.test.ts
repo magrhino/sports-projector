@@ -681,6 +681,8 @@ function createHistoricalRefreshContext(): HistoricalRefreshHttpContext {
         lookaheadDays: 2,
         eventIds: ["2467180"],
         sportsDbApiKey: "123",
+        marketTotalsEnabled: true,
+        marketTotalsMaxPages: 10,
         python: "python3",
         root: "/repo",
         artifactDir: "/repo/data/historical",

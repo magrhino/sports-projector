@@ -180,7 +180,7 @@ The local generated state files are:
 - `data/historical/artifact_manifest.json`: inventory of local model/team-stat artifacts, feature counts, file sizes, date-table ranges when SQLite team stats are configured, and validation status.
 - `data/historical/artifact_import_log.jsonl`: append-only summaries for validation and training runs.
 
-SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports. Imports supplement season payloads with recent day events, upcoming day snapshots, and each team's latest event because some SportsDB season responses are capped or stale.
+SportsDB v1 NBA import writes raw provider payloads, normalized SQLite training/team-stat snapshots, optional Kalshi market-total artifacts, `linear_json` score models, `manifest.json`, `artifact_manifest.json`, and an import log entry. The default free SportsDB API key is `123`; override it with `--api-key` when using a private key. The importer defaults to NBA league id `4387`, the current NBA season plus the previous five seasons, and a 30 requests/minute limiter. The default season window is calendar-derived so stale SportsDB season-list samples do not cause old historical imports. Imports supplement season payloads with recent day events, upcoming day snapshots, and each team's latest event because some SportsDB season responses are capped or stale.
 
 To force a known SportsDB event into the artifacts:
 
@@ -213,6 +213,8 @@ PYTHONPATH=python python3 -m nba_historical_projection import-sportsdb \
 ```
 
 `market_lines.csv` should include `game_date` or `date`, `home_team`, `away_team`, and any of `closing_total`, `closing_spread`, `opening_total`, or `opening_spread`. `availability.csv` should include `date`, `team`, and optional `unavailable_minutes` / `unavailable_value` aggregates. When closing market lines are present, training can select market-residual models and stores rolling-origin validation metrics plus calibrated 68/80/90 percent residual intervals in `manifest.json`.
+
+Scheduled historical refreshes automatically try to populate NBA total lines from public Kalshi `KXNBATOTAL` current and historical market endpoints. Explicit `market_lines.csv` rows still override auto-discovered rows. SportsDB and ESPN are used for game identity, teams, dates, scores, and snapshots; they are not market-total sources for v1. If Kalshi market totals are unavailable, the refresh still completes and predictions fall back to missing-market-context behavior.
 
 Optional calibrated historical artifacts are additive to the existing score and margin projections. Scheduled web refreshes enable calibrated probabilities, residual quantiles, market-derived team ratings, score-based team skills, and experimental market diagnostics by default through the server settings file. When running the importer manually with local market lines, use:
 
@@ -340,6 +342,8 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS` | `2` | Future day window included for prediction snapshots |
 | `SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS` | empty | Comma-separated SportsDB event IDs to force into scheduled imports |
 | `SPORTS_PROJECTOR_SPORTSDB_API_KEY` | `123` | SportsDB API key for scheduled historical refreshes |
+| `SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_ENABLED` | `true` | Enables automatic Kalshi total-line imports during scheduled historical refreshes |
+| `SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES` | `10` | Maximum current and historical Kalshi market pages fetched per refresh, clamped from 0 to 100 |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED` | `false` | Enables NBA live-game polling and snapshot persistence |
 | `SPORTS_PROJECTOR_LIVE_DB_PATH` | `data/live-tracking/nba-live.sqlite` | SQLite path for live snapshots and trained models |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Tracker polling interval, clamped from 5 to 300 seconds |
@@ -363,6 +367,9 @@ Kalshi public endpoints used:
 
 - `https://api.elections.kalshi.com/trade-api/v2/markets`
 - `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}`
+- `https://api.elections.kalshi.com/trade-api/v2/historical/markets`
+- `https://api.elections.kalshi.com/trade-api/v2/historical/markets/{ticker}`
+- `https://api.elections.kalshi.com/trade-api/v2/historical/markets/{ticker}/candlesticks`
 - `https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook`
 - `https://api.elections.kalshi.com/trade-api/v2/markets/trades`
 - `https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}`

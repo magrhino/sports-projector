@@ -82,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--lookback-seasons", type=int, default=None)
     sportsdb_parser.add_argument("--rate-limit-per-minute", type=int, default=DEFAULT_RATE_LIMIT_PER_MINUTE)
     sportsdb_parser.add_argument("--market-lines-csv")
+    sportsdb_parser.add_argument("--auto-market-lines", action="store_true")
+    sportsdb_parser.add_argument("--market-lines-max-pages", type=int, default=10)
     sportsdb_parser.add_argument("--availability-csv")
     sportsdb_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="auto")
     sportsdb_parser.add_argument("--validation-splits", type=int, default=3)
@@ -193,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
                 write_state=not args.no_write_state,
                 log_run=not args.no_log_run,
                 market_lines_csv=args.market_lines_csv,
+                auto_market_lines=args.auto_market_lines,
+                market_lines_max_pages=args.market_lines_max_pages,
                 availability_csv=args.availability_csv,
                 model_kind=args.model_kind,
                 validation_splits=args.validation_splits,

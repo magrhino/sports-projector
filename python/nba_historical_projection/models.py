@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from .artifacts import ArtifactError, artifact_path, load_json, validate_manifest
 from .calibration import apply_calibration, clamp_probability
-from .features import build_feature_vector_with_metadata
+from .features import build_feature_vector_with_metadata, normalize_team_name
 from .quantiles import predict_quantiles
 from .training import baseline_feature_for
 
@@ -92,9 +93,16 @@ def derive_team_scores(projected_total: float, projected_home_margin: float) -> 
 def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) -> dict[str, Any]:
     root = Path(artifact_dir)
     manifest = validate_manifest(root)
+    request_market_total = numeric_or_none(request.get("market_total"))
+    market_context = market_total_context(root, manifest, request, request_market_total)
+    prediction_request = (
+        {**request, "market_total": market_context["market_total"]}
+        if request_market_total is None and market_context.get("market_total") is not None
+        else request
+    )
     feature_columns = manifest["feature_columns"]
-    features, feature_values, feature_metadata = build_feature_vector_with_metadata(root, manifest, request)
-    snapshot_age_days = validate_snapshot_freshness(manifest, feature_metadata, request)
+    features, feature_values, feature_metadata = build_feature_vector_with_metadata(root, manifest, prediction_request)
+    snapshot_age_days = validate_snapshot_freshness(manifest, feature_metadata, prediction_request)
 
     models = manifest["models"]
     total_model = load_predictor(root, models["total_score"])
@@ -102,27 +110,29 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     projected_total = total_model.predict(features, feature_columns)
     projected_home_margin = margin_model.predict(features, feature_columns)
     if models["total_score"].get("target_mode") == "market_residual":
-        projected_total += baseline_value("total_score", feature_values, request)
+        projected_total += baseline_value("total_score", feature_values, prediction_request)
     if models["home_margin"].get("target_mode") == "market_residual":
-        projected_home_margin += baseline_value("home_margin", feature_values, request)
+        projected_home_margin += baseline_value("home_margin", feature_values, prediction_request)
 
-    validate_projected_total(manifest, projected_total, request)
-    market_total_used = numeric_or_none(request.get("market_total"))
+    validate_projected_total(manifest, projected_total, prediction_request)
+    market_total_used = numeric_or_none(prediction_request.get("market_total"))
     data_quality = data_quality_for_prediction(market_total_used)
     result = {
         **derive_team_scores(projected_total, projected_home_margin),
         "teams": {
-            "home": request["home_team"],
-            "away": request["away_team"],
+            "home": prediction_request["home_team"],
+            "away": prediction_request["away_team"],
         },
-        "game_date": request["game_date"],
-        "season": request.get("season"),
+        "game_date": prediction_request["game_date"],
+        "season": prediction_request.get("season"),
         "uncertainty": collect_uncertainty(models),
         "artifact": {
             "generated_at": manifest.get("generated_at"),
             "snapshot_date": feature_metadata.get("snapshot_date"),
             "snapshot_age_days": snapshot_age_days,
             "market_total_used": market_total_used,
+            "market_total_source": market_context.get("source"),
+            "market_total_confidence": market_context.get("confidence"),
             "seasons": manifest.get("seasons", []),
             "source": manifest.get("source", {}),
             "models": {
@@ -144,7 +154,7 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
         ],
     }
 
-    market_comparison = market_comparison_for_request(request, result)
+    market_comparison = market_comparison_for_request(prediction_request, result)
     if market_comparison:
         result["market_comparison"] = market_comparison
 
@@ -152,11 +162,11 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     if quantile_output:
         result.update(quantile_output)
 
-    probabilities = probabilities_for_prediction(manifest, models, result, request)
+    probabilities = probabilities_for_prediction(manifest, models, result, prediction_request)
     if probabilities:
         result["probabilities"] = probabilities
 
-    edge_status = edge_status_for_prediction(result, request)
+    edge_status = edge_status_for_prediction(result, prediction_request)
     if edge_status:
         result["informational_edge_status"] = edge_status
 
@@ -172,6 +182,99 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
         }
 
     return result
+
+
+def market_total_context(
+    root: Path,
+    manifest: dict[str, Any],
+    request: dict[str, Any],
+    request_market_total: float | None,
+) -> dict[str, Any]:
+    if request_market_total is not None:
+        return {
+            "market_total": request_market_total,
+            "source": "request",
+            "confidence": 1.0,
+        }
+
+    artifact_total = market_total_from_artifact(root, manifest, request)
+    if artifact_total is None:
+        return {
+            "market_total": None,
+            "source": None,
+            "confidence": None,
+        }
+    return artifact_total
+
+
+def market_total_from_artifact(root: Path, manifest: dict[str, Any], request: dict[str, Any]) -> dict[str, Any] | None:
+    config = manifest.get("market_lines")
+    if not isinstance(config, dict) or config.get("type") != "sqlite":
+        return None
+    configured_path = config.get("path")
+    if not isinstance(configured_path, str) or not configured_path:
+        return None
+    table = config.get("table", "market_lines")
+    if not isinstance(table, str) or not table.replace("_", "").isalnum():
+        return None
+    db_path = artifact_path(root, configured_path)
+    if not db_path.is_file():
+        return None
+
+    home_teams = market_lookup_names(str(request["home_team"]))
+    away_teams = market_lookup_names(str(request["away_team"]))
+    home_placeholders = ", ".join("?" for _ in home_teams)
+    away_placeholders = ", ".join("?" for _ in away_teams)
+    game_date = str(request["game_date"])
+    try:
+        with sqlite3.connect(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                f"""
+                SELECT closing_total, source, confidence, market_ticker, event_ticker
+                FROM "{table}"
+                WHERE game_date = ?
+                  AND normalized_home_team IN ({home_placeholders})
+                  AND normalized_away_team IN ({away_placeholders})
+                ORDER BY
+                  CASE WHEN normalized_home_team = ? THEN 0 ELSE 1 END,
+                  CASE WHEN normalized_away_team = ? THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                (game_date, *home_teams, *away_teams, home_teams[0], away_teams[0]),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    market_total = numeric_or_none(row["closing_total"])
+    if market_total is None:
+        return None
+    return {
+        "market_total": market_total,
+        "source": row["source"],
+        "confidence": numeric_or_none(row["confidence"]),
+        "market_ticker": row["market_ticker"],
+        "event_ticker": row["event_ticker"],
+    }
+
+
+def normalize_match_name(value: str) -> str:
+    return " ".join(str(value).strip().lower().replace(".", "").split())
+
+
+def market_lookup_names(value: str) -> list[str]:
+    text = " ".join(str(value).strip().split())
+    candidates = [text, normalize_team_name(text)]
+    if normalize_match_name(text) in {"la clippers", "los angeles clippers"}:
+        candidates.extend(["LA Clippers", "Los Angeles Clippers"])
+
+    names: list[str] = []
+    for candidate in candidates:
+        normalized = normalize_match_name(candidate)
+        if normalized and normalized not in names:
+            names.append(normalized)
+    return names or [""]
 
 
 def validate_snapshot_freshness(

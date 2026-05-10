@@ -125,6 +125,8 @@ export type HistoricalRefreshStatusPayload = {
   recent_days?: number;
   lookahead_days?: number;
   event_ids?: string[];
+  market_totals_enabled?: boolean;
+  market_totals_max_pages?: number;
   artifact_dir?: string;
   latest_snapshot_date?: string | null;
   artifact_date_range?: {

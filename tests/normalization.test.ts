@@ -4,6 +4,7 @@ import {
   normalizeEvent,
   normalizeGameStats,
   normalizeLiveData,
+  normalizeMarkets,
   normalizeMilestones,
   normalizeOrderbook,
   normalizeSingleMarket
@@ -124,6 +125,35 @@ describe("Kalshi normalization", () => {
     expect(result.functional_strike).toBe(">= 203");
     expect(result.yes_sub_title).toBe("At least 203 points");
     expect(result.yes_bid_cents).toBe(49);
+  });
+
+  it("normalizes historical market dollar fields", () => {
+    const result = normalizeMarkets({
+      markets: [
+        {
+          ticker: "KXNBA-CELNYK-TOTAL-203",
+          series_ticker: "KXNBATOTAL",
+          floor_strike: "203",
+          yes_bid_dollars: "0.4700",
+          yes_ask_dollars: "0.5300",
+          no_bid_dollars: "0.4600",
+          no_ask_dollars: "0.5400",
+          last_price_dollars: "0.5100",
+          liquidity_dollars: "1250.00"
+        }
+      ],
+      cursor: ""
+    });
+
+    expect(result.markets[0]).toMatchObject({
+      ticker: "KXNBA-CELNYK-TOTAL-203",
+      yes_bid_cents: 47,
+      yes_ask_cents: 53,
+      no_bid_cents: 46,
+      no_ask_cents: 54,
+      last_price_cents: 51,
+      liquidity: 1250
+    });
   });
 
   it("normalizes events, milestones, live data, and game stats", () => {

@@ -8,6 +8,9 @@ import {
 import {
   buildKalshiEventUrl,
   buildKalshiGameStatsUrl,
+  buildKalshiHistoricalMarketCandlesticksUrl,
+  buildKalshiHistoricalMarketUrl,
+  buildKalshiHistoricalMarketsUrl,
   buildKalshiLiveDataUrl,
   buildKalshiMarketUrl,
   buildKalshiMarketsUrl,
@@ -43,8 +46,16 @@ describe("URL builders", () => {
   it("builds only allowlisted Kalshi URLs", () => {
     const urls = [
       buildKalshiMarketsUrl({ limit: 10, status: "open", seriesTicker: "KXNBA" }),
+      buildKalshiHistoricalMarketsUrl({ limit: 10, seriesTicker: "KXNBATOTAL" }),
       buildKalshiMarketsUrl({ tickers: ["KXTEST-26APR", "KXTEST-26MAY"] }),
       buildKalshiMarketUrl("KXTEST-26APR"),
+      buildKalshiHistoricalMarketUrl("KXTEST-26APR"),
+      buildKalshiHistoricalMarketCandlesticksUrl({
+        ticker: "KXTEST-26APR",
+        startTs: 1,
+        endTs: 2,
+        periodInterval: 60
+      }),
       buildKalshiEventUrl("KXEVENT-26APR", true),
       buildKalshiMilestonesUrl({ relatedEventTicker: "KXEVENT-26APR", category: "Sports", limit: 10 }),
       buildKalshiLiveDataUrl("milestone-123"),

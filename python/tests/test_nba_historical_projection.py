@@ -335,6 +335,56 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(projection["debug"]["feature_metadata"]["snapshot_date"], "2026-05-07")
             self.assertNotIn(tmpdir, json.dumps(projection["debug"]))
 
+    def test_predict_matches_artifact_market_line_for_team_alias(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_sqlite_projection_artifact(
+                root,
+                snapshot_date="2026-05-07",
+                projected_total=218,
+                home_team="Los Angeles Clippers",
+                away_team="New York Knicks",
+            )
+            with sqlite3.connect(root / "market_lines.sqlite") as connection:
+                write_sqlite_rows(
+                    connection,
+                    "market_lines",
+                    [
+                        {
+                            "game_date": "2026-05-08",
+                            "home_team": "Los Angeles Clippers",
+                            "away_team": "New York Knicks",
+                            "normalized_home_team": "los angeles clippers",
+                            "normalized_away_team": "new york knicks",
+                            "closing_total": 224.5,
+                            "source": "csv",
+                            "confidence": 1.0,
+                            "market_ticker": None,
+                            "event_ticker": None,
+                        }
+                    ],
+                )
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            manifest["market_lines"] = {
+                "type": "sqlite",
+                "path": "market_lines.sqlite",
+                "table": "market_lines",
+            }
+            self.write_json(root / "manifest.json", manifest)
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "LA Clippers",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-05-08",
+                },
+            )
+
+            self.assertEqual(projection["artifact"]["market_total_used"], 224.5)
+            self.assertEqual(projection["artifact"]["market_total_source"], "csv")
+            self.assertEqual(projection["market_comparison"]["market_total"], 224.5)
+
     def test_predict_rejects_total_outside_plausible_range(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -782,6 +832,93 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(row["Total-Market-Residual"], 1.0)
             self.assertEqual(row["HOME_UNAVAILABLE_MINUTES"], 24.0)
 
+    def test_sportsdb_import_auto_fetches_kalshi_market_lines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                kalshi_client=FakeKalshiClient(),
+                auto_market_lines=True,
+                market_lines_max_pages=2,
+                model_kind="auto",
+                validation_splits=2,
+            )
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            market_lines_path = root / "sportsdb" / "normalized" / "nba_market_lines.sqlite"
+            self.assertTrue(market_lines_path.is_file())
+            self.assertEqual(result["market_line_matches"], 4)
+            self.assertEqual(result["market_line_auto"]["matched_rows"], 5)
+            self.assertEqual(result["market_line_source_counts"], {"kalshi_current": 5})
+            self.assertEqual(manifest["market_lines"]["type"], "sqlite")
+            self.assertEqual(manifest["data_sources"]["market_lines"]["auto_rows"], 5)
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-04-25",
+                },
+            )
+            self.assertEqual(projection["artifact"]["market_total_used"], 221.5)
+            self.assertEqual(projection["artifact"]["market_total_source"], "kalshi_current")
+            self.assertEqual(projection["data_quality"]["status"], "ok")
+            self.assertEqual(projection["market_comparison"]["market_total"], 221.5)
+            self.assertNotIn("local_live_tracking_snapshots", json.dumps(manifest))
+
+    def test_request_market_total_overrides_artifact_market_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                kalshi_client=FakeKalshiClient(),
+                auto_market_lines=True,
+                model_kind="auto",
+                validation_splits=2,
+            )
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Boston Celtics",
+                    "away_team": "New York Knicks",
+                    "game_date": "2026-04-25",
+                    "market_total": 230.0,
+                },
+            )
+
+            self.assertEqual(projection["artifact"]["market_total_used"], 230.0)
+            self.assertEqual(projection["artifact"]["market_total_source"], "request")
+            self.assertEqual(projection["market_comparison"]["market_total"], 230.0)
+
+    def test_auto_market_line_import_skips_ambiguous_matches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                kalshi_client=FakeKalshiClient(ambiguous=True),
+                auto_market_lines=True,
+                validation_splits=2,
+            )
+
+            self.assertEqual(result["market_line_auto"]["ambiguous_matches"], 1)
+            with sqlite3.connect(root / "sportsdb" / "normalized" / "nba_games.sqlite") as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    f'SELECT * FROM "{TRAINING_TABLE}" WHERE "Date" = ?',
+                    ("2025-10-21",),
+                ).fetchone()
+            self.assertNotIn("MARKET_TOTAL_CLOSE", row.keys())
+
     def test_sportsdb_import_can_emit_enhanced_validation_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1220,6 +1357,56 @@ class FakeSportsDbClient:
     def assert_nba_league(self, league_id: str):
         if league_id != "4387":
             raise AssertionError(f"unexpected league id: {league_id}")
+
+
+class FakeKalshiClient:
+    def __init__(self, ambiguous=False):
+        self.ambiguous = ambiguous
+
+    def fetch_current_markets(self, series_ticker: str, cursor=None, limit=100):
+        if series_ticker != "KXNBATOTAL":
+            raise AssertionError(f"unexpected series ticker: {series_ticker}")
+        if cursor:
+            return {"markets": [], "cursor": ""}
+        if self.ambiguous:
+            return {
+                "markets": [
+                    self.market("KXNBA-CELNYK-TOTAL-220", "2025-10-21", "Boston Celtics", "New York Knicks", 220, 50),
+                    self.market("KXNBA-CELNYK-TOTAL-221", "2025-10-21", "Boston Celtics", "New York Knicks", 221, 50),
+                ],
+                "cursor": "",
+            }
+        return {
+            "markets": [
+                self.market("KXNBA-CELNYK-TOTAL-220", "2025-10-21", "Boston Celtics", "New York Knicks", 220, 50),
+                self.market("KXNBA-BKNBOS-TOTAL-205", "2025-10-22", "Brooklyn Nets", "Boston Celtics", 205, 50),
+                self.market("KXNBA-NYKBKN-TOTAL-211", "2025-10-24", "New York Knicks", "Brooklyn Nets", 211, 50),
+                self.market("KXNBA-BOSBKN-TOTAL-214", "2025-10-26", "Boston Celtics", "Brooklyn Nets", 214, 50),
+                self.market("KXNBA-CELNYK-TOTAL-221.5", "2026-04-25", "Boston Celtics", "New York Knicks", 221.5, 50),
+            ],
+            "cursor": "",
+        }
+
+    def fetch_historical_markets(self, series_ticker: str, cursor=None, limit=100):
+        if series_ticker != "KXNBATOTAL":
+            raise AssertionError(f"unexpected series ticker: {series_ticker}")
+        return {"markets": [], "cursor": ""}
+
+    def market(self, ticker, date_text, home, away, total, midpoint):
+        return {
+            "ticker": ticker,
+            "event_ticker": ticker.rsplit("-TOTAL", 1)[0],
+            "series_ticker": "KXNBATOTAL",
+            "title": f"{home} and {away} total points",
+            "subtitle": f"Total points {total}",
+            "yes_sub_title": f"At least {total} points",
+            "no_sub_title": f"Fewer than {total} points",
+            "occurrence_datetime": f"{date_text}T23:00:00Z",
+            "floor_strike": str(total),
+            "functional_strike": f">= {total}",
+            "yes_bid_dollars": f"{(midpoint - 1) / 100:.4f}",
+            "yes_ask_dollars": f"{(midpoint + 1) / 100:.4f}",
+        }
 
 
 if __name__ == "__main__":

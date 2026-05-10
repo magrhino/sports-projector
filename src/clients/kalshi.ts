@@ -73,8 +73,41 @@ export function buildKalshiMarketsUrl(input: {
   });
 }
 
+export function buildKalshiHistoricalMarketsUrl(input: {
+  limit?: number;
+  cursor?: string;
+  seriesTicker?: string;
+  eventTicker?: string;
+  tickers?: readonly string[] | string;
+}): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "historical", "markets"], {
+    limit: input.limit,
+    cursor: input.cursor,
+    series_ticker: input.seriesTicker,
+    event_ticker: input.eventTicker,
+    tickers: tickersQuery(input.tickers)
+  });
+}
+
 export function buildKalshiMarketUrl(ticker: string): URL {
   return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "markets", ticker]);
+}
+
+export function buildKalshiHistoricalMarketUrl(ticker: string): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "historical", "markets", ticker]);
+}
+
+export function buildKalshiHistoricalMarketCandlesticksUrl(input: {
+  ticker: string;
+  startTs: number;
+  endTs: number;
+  periodInterval: 1 | 60 | 1440;
+}): URL {
+  return buildUrl(KALSHI_ORIGIN, ["trade-api", "v2", "historical", "markets", input.ticker, "candlesticks"], {
+    start_ts: input.startTs,
+    end_ts: input.endTs,
+    period_interval: input.periodInterval
+  });
 }
 
 export function buildKalshiEventUrl(eventTicker: string, withNestedMarkets?: boolean): URL {

@@ -15,6 +15,8 @@ export interface HistoricalRefreshConfig extends HistoricalProjectionConfig {
   lookaheadDays: number;
   eventIds: string[];
   sportsDbApiKey: string;
+  marketTotalsEnabled: boolean;
+  marketTotalsMaxPages: number;
   historicalEnhancementsEnabled?: boolean;
 }
 
@@ -26,6 +28,8 @@ export interface HistoricalRefreshStatus {
   recent_days: number;
   lookahead_days: number;
   event_ids: string[];
+  market_totals_enabled: boolean;
+  market_totals_max_pages: number;
   artifact_dir: string;
   latest_snapshot_date?: string | null;
   artifact_date_range?: {
@@ -111,6 +115,8 @@ export class HistoricalRefreshScheduler {
       recent_days: this.config.recentDays,
       lookahead_days: this.config.lookaheadDays,
       event_ids: this.config.eventIds,
+      market_totals_enabled: this.config.marketTotalsEnabled,
+      market_totals_max_pages: this.config.marketTotalsMaxPages,
       artifact_dir: this.config.artifactDir,
       latest_snapshot_date: artifactSummary.latestSnapshotDate,
       artifact_date_range: artifactSummary.dateRange,
@@ -176,7 +182,9 @@ export function historicalRefreshConfigFromEnv(env: NodeJS.ProcessEnv = process.
     recentDays: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_RECENT_DAYS, 3, 0, 30),
     lookaheadDays: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS, 2, 0, 30),
     eventIds: splitCsv(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS),
-    sportsDbApiKey: env.SPORTS_PROJECTOR_SPORTSDB_API_KEY ?? "123"
+    sportsDbApiKey: env.SPORTS_PROJECTOR_SPORTSDB_API_KEY ?? "123",
+    marketTotalsEnabled: parseBoolean(env.SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_ENABLED, true),
+    marketTotalsMaxPages: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES, 10, 0, 100)
   };
 }
 
@@ -241,6 +249,9 @@ export function historicalRefreshArgs(config: HistoricalRefreshConfig): string[]
       "score-based",
       "--experimental-market-decorrelation"
     );
+  }
+  if (config.marketTotalsEnabled) {
+    args.push("--auto-market-lines", "--market-lines-max-pages", String(config.marketTotalsMaxPages));
   }
   for (const eventId of config.eventIds) {
     args.push("--event-id", eventId);

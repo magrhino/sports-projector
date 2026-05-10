@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from .artifacts import append_run_log, build_artifact_inventory, utc_timestamp, write_state_manifest
 from .dataset import build_game_record
@@ -45,12 +46,18 @@ from .providers.sportsdb import (
     SportsDbError,
     write_raw_json,
 )
+from .providers.kalshi import (
+    DEFAULT_MARKET_LINES_MAX_PAGES,
+    KalshiMarketClient,
+    fetch_total_markets,
+)
 
 
 TRAINING_TABLE = "sportsdb_nba_training"
 DEFAULT_FIRST_GAME_REST_DAYS = 7.0
 BASE_ELO = 1500.0
 ELO_K = 20.0
+NBA_GAME_TIMEZONE = ZoneInfo("America/New_York")
 
 
 class SportsDbImportClient(Protocol):
@@ -124,6 +131,10 @@ class MarketLine:
     closing_spread: float | None = None
     opening_total: float | None = None
     opening_spread: float | None = None
+    source: str = "csv"
+    confidence: float | None = None
+    market_ticker: str | None = None
+    event_ticker: str | None = None
 
 
 @dataclass
@@ -157,6 +168,9 @@ def import_sportsdb_artifacts(
     rating_line_source: str = "close",
     skill_features: str = "none",
     experimental_market_decorrelation: bool = False,
+    auto_market_lines: bool = False,
+    market_lines_max_pages: int = DEFAULT_MARKET_LINES_MAX_PAGES,
+    kalshi_client: KalshiMarketClient | None = None,
 ) -> dict[str, Any]:
     if sport not in SPORT_CONFIGS:
         raise SportsDbError(f"Unsupported SportsDB sport: {sport}")
@@ -227,7 +241,22 @@ def import_sportsdb_artifacts(
     team_names = sorted({team.name for team in teams} | {game.home_team for game in games} | {game.away_team for game in games})
     dataset_path = normalized_root / "nba_games.sqlite"
     team_stats_path = normalized_root / "nba_team_stats.sqlite"
-    market_lines = load_market_lines_csv(market_lines_csv) if market_lines_csv else {}
+    market_lines_path = normalized_root / "nba_market_lines.sqlite"
+    explicit_market_lines = load_market_lines_csv(market_lines_csv) if market_lines_csv else {}
+    auto_market_summary: dict[str, Any] = {"enabled": auto_market_lines}
+    auto_market_lines_by_key: dict[tuple[str, str, str], MarketLine] = {}
+    if auto_market_lines:
+        auto_market_lines_by_key, auto_market_summary = collect_auto_market_lines(
+            games,
+            max_pages=market_lines_max_pages,
+            client=kalshi_client,
+        )
+    market_lines = {
+        **auto_market_lines_by_key,
+        **explicit_market_lines,
+    }
+    if market_lines:
+        write_market_lines_sqlite(market_lines_path, market_lines)
     availability = load_availability_csv(availability_csv) if availability_csv else {}
     training_rows, snapshot_dates = build_training_and_snapshots(
         games,
@@ -297,9 +326,24 @@ def import_sportsdb_artifacts(
             "team_last_events": include_team_last_events,
         },
         "data_sources": {
-            "market_lines": data_source_summary(market_lines_csv, len(market_lines)),
+            "market_lines": market_line_source_summary(
+                market_lines_csv,
+                len(explicit_market_lines),
+                auto_market_summary,
+                len(auto_market_lines_by_key),
+                len(market_lines),
+            ),
             "availability": data_source_summary(availability_csv, len(availability)),
         },
+        "market_lines": (
+            {
+                "type": "sqlite",
+                "path": str(market_lines_path.relative_to(root)),
+                "table": "market_lines",
+            }
+            if market_lines
+            else None
+        ),
         "seasons": selected_seasons,
         "feature_columns": feature_columns,
         "feature_defaults": feature_defaults,
@@ -357,8 +401,11 @@ def import_sportsdb_artifacts(
         "snapshot_dates": snapshot_dates,
         "dataset": str(dataset_path),
         "team_stats": str(team_stats_path),
+        "market_lines": str(market_lines_path) if market_lines else None,
         "feature_count": len(feature_columns),
         "market_line_matches": sum(1 for row in training_rows if row.get("MARKET_TOTAL_CLOSE") is not None),
+        "market_line_source_counts": market_line_source_counts(market_lines),
+        "market_line_auto": auto_market_summary,
         "availability_team_matches": sum(
             1
             for row in training_rows
@@ -519,9 +566,270 @@ def load_market_lines_csv(path: str | Path) -> dict[tuple[str, str, str], Market
                 closing_spread=first_number(row, "closing_spread", "market_spread", "spread"),
                 opening_total=first_number(row, "opening_total", "open_total"),
                 opening_spread=first_number(row, "opening_spread", "open_spread"),
+                source="csv",
+                confidence=1.0,
             )
             market_lines[matchup_key(date, home_team, away_team)] = market_line
     return market_lines
+
+
+def collect_auto_market_lines(
+    games: list[SportsDbGame],
+    max_pages: int,
+    client: KalshiMarketClient | None = None,
+) -> tuple[dict[tuple[str, str, str], MarketLine], dict[str, Any]]:
+    try:
+        markets, summary = fetch_total_markets(client=client, max_pages=max_pages)
+    except Exception as exc:
+        return {}, {
+            "enabled": True,
+            "matched_rows": 0,
+            "ambiguous_matches": 0,
+            "skipped_markets": 0,
+            "errors": [{"source": "kalshi", "message": str(exc)}],
+        }
+
+    candidates: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    skipped_markets = 0
+    candidate_count = 0
+    for market in markets:
+        total = extract_market_total(market)
+        if total is None:
+            skipped_markets += 1
+            continue
+        market_date = market_game_date(market)
+        if market_date is None:
+            skipped_markets += 1
+            continue
+        market_text = normalized_market_text(market)
+        for game in games:
+            if game.date != market_date:
+                continue
+            if not market_matches_game(market_text, game):
+                continue
+            candidate_count += 1
+            key = matchup_key(game.date, game.home_team, game.away_team)
+            candidates.setdefault(key, []).append(
+                {
+                    "game": game,
+                    "market": market,
+                    "total": total,
+                    "distance": market_distance_from_even(market),
+                    "confidence": market_match_confidence(market_text, game),
+                    "source": str(market.get("_sports_projector_source") or "kalshi"),
+                }
+            )
+
+    market_lines: dict[tuple[str, str, str], MarketLine] = {}
+    ambiguous_matches = 0
+    for key, matched_candidates in candidates.items():
+        selected = select_market_line_candidate(matched_candidates)
+        if selected is None:
+            ambiguous_matches += 1
+            continue
+        game = selected["game"]
+        market = selected["market"]
+        market_lines[key] = MarketLine(
+            game_date=game.date,
+            home_team=game.home_team,
+            away_team=game.away_team,
+            closing_total=float(selected["total"]),
+            source=str(selected["source"]),
+            confidence=float(selected["confidence"]),
+            market_ticker=string_or_none(market.get("ticker")),
+            event_ticker=string_or_none(market.get("event_ticker")),
+        )
+
+    summary.update(
+        {
+            "matched_rows": len(market_lines),
+            "candidate_matches": candidate_count,
+            "ambiguous_matches": ambiguous_matches,
+            "skipped_markets": skipped_markets,
+            "source_counts": market_line_source_counts(market_lines),
+        }
+    )
+    return market_lines, summary
+
+
+def select_market_line_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            float(candidate["distance"]),
+            -float(candidate["confidence"]),
+            str(candidate["market"].get("ticker") or ""),
+        ),
+    )
+    top = ordered[0]
+    if len(ordered) > 1:
+        second = ordered[1]
+        same_distance = abs(float(top["distance"]) - float(second["distance"])) < 1e-9
+        same_confidence = abs(float(top["confidence"]) - float(second["confidence"])) < 1e-9
+        different_line = abs(float(top["total"]) - float(second["total"])) > 1e-9
+        if same_distance and same_confidence and different_line:
+            return None
+    return top
+
+
+def write_market_lines_sqlite(path: Path, market_lines: dict[tuple[str, str, str], MarketLine]) -> None:
+    rows = [
+        {
+            "game_date": line.game_date,
+            "home_team": line.home_team,
+            "away_team": line.away_team,
+            "normalized_home_team": normalize_match_name(line.home_team),
+            "normalized_away_team": normalize_match_name(line.away_team),
+            "closing_total": line.closing_total,
+            "closing_spread": line.closing_spread,
+            "opening_total": line.opening_total,
+            "opening_spread": line.opening_spread,
+            "source": line.source,
+            "confidence": line.confidence,
+            "market_ticker": line.market_ticker,
+            "event_ticker": line.event_ticker,
+        }
+        for line in sorted(market_lines.values(), key=lambda item: (item.game_date, item.home_team, item.away_team))
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        if rows:
+            write_sqlite_rows(connection, "market_lines", rows)
+        else:
+            connection.execute("DROP TABLE IF EXISTS market_lines")
+            connection.execute(
+                """
+                CREATE TABLE market_lines (
+                  game_date TEXT,
+                  home_team TEXT,
+                  away_team TEXT,
+                  normalized_home_team TEXT,
+                  normalized_away_team TEXT,
+                  closing_total REAL,
+                  closing_spread REAL,
+                  opening_total REAL,
+                  opening_spread REAL,
+                  source TEXT,
+                  confidence REAL,
+                  market_ticker TEXT,
+                  event_ticker TEXT
+                )
+                """
+            )
+            connection.commit()
+
+
+def extract_market_total(market: dict[str, Any]) -> float | None:
+    for key in ("floor_strike", "cap_strike"):
+        value = number_or_none(market.get(key))
+        if value is not None and plausible_nba_total(value):
+            return value
+
+    text = " ".join(
+        clean_string(market.get(key))
+        for key in ("functional_strike", "yes_sub_title", "no_sub_title", "title", "subtitle", "ticker")
+        if clean_string(market.get(key))
+    )
+    for token in text.replace("-", " ").replace("_", " ").split():
+        cleaned = token.strip("+,.:;()[]{}<>=").replace("O", "0")
+        value = number_or_none(cleaned)
+        if value is not None and plausible_nba_total(value):
+            return value
+    return None
+
+
+def plausible_nba_total(value: float) -> bool:
+    return 120.0 <= value <= 320.0
+
+
+def market_game_date(market: dict[str, Any]) -> str | None:
+    for key in ("occurrence_datetime", "close_time", "expiration_time", "latest_expiration_time", "open_time"):
+        value = clean_string(market.get(key))
+        parsed = iso_datetime_to_nba_date(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def iso_datetime_to_nba_date(value: str) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value[:10] if len(value) >= 10 and is_iso_date(value[:10]) else None
+    if parsed.tzinfo is None:
+        return parsed.date().isoformat()
+    return parsed.astimezone(NBA_GAME_TIMEZONE).date().isoformat()
+
+
+def normalized_market_text(market: dict[str, Any]) -> str:
+    return normalize_match_name(
+        " ".join(
+            clean_string(market.get(key))
+            for key in (
+                "ticker",
+                "event_ticker",
+                "title",
+                "subtitle",
+                "yes_sub_title",
+                "no_sub_title",
+                "functional_strike",
+            )
+            if clean_string(market.get(key))
+        )
+    )
+
+
+def market_matches_game(market_text: str, game: SportsDbGame) -> bool:
+    return team_in_market_text(game.home_team, market_text) and team_in_market_text(game.away_team, market_text)
+
+
+def team_in_market_text(team: str, market_text: str) -> bool:
+    return any(alias and alias in market_text for alias in team_aliases(team))
+
+
+def team_aliases(team: str) -> list[str]:
+    words = [word for word in clean_string(team).split() if word]
+    aliases = [normalize_match_name(team)]
+    if words:
+        aliases.append(normalize_match_name(words[-1]))
+    if len(words) >= 2:
+        aliases.append(normalize_match_name(" ".join(words[-2:])))
+    return sorted({alias for alias in aliases if len(alias) >= 3}, key=len, reverse=True)
+
+
+def market_match_confidence(market_text: str, game: SportsDbGame) -> float:
+    home_full = normalize_match_name(game.home_team) in market_text
+    away_full = normalize_match_name(game.away_team) in market_text
+    if home_full and away_full:
+        return 0.95
+    return 0.85
+
+
+def market_distance_from_even(market: dict[str, Any]) -> float:
+    yes_bid = cents_from_value(market.get("yes_bid_dollars", market.get("yes_bid")))
+    yes_ask = cents_from_value(market.get("yes_ask_dollars", market.get("yes_ask")))
+    last_price = cents_from_value(market.get("last_price_dollars", market.get("last_price")))
+    if yes_bid is not None and yes_ask is not None:
+        return abs(((yes_bid + yes_ask) / 2.0) - 50.0)
+    if last_price is not None:
+        return abs(last_price - 50.0)
+    return 100.0
+
+
+def cents_from_value(value: Any) -> float | None:
+    number = number_or_none(value)
+    if number is None:
+        return None
+    return number * 100.0 if number <= 1.0 else number
+
+
+def string_or_none(value: Any) -> str | None:
+    text = clean_string(value)
+    return text or None
 
 
 def load_availability_csv(path: str | Path) -> dict[tuple[str, str], Availability]:
@@ -545,6 +853,30 @@ def data_source_summary(path: str | Path | None, matched_rows: int) -> dict[str,
         "path": None if path is None else str(path),
         "matched_rows": matched_rows,
     }
+
+
+def market_line_source_summary(
+    csv_path: str | Path | None,
+    csv_rows: int,
+    auto_summary: dict[str, Any],
+    auto_rows: int,
+    combined_rows: int,
+) -> dict[str, Any]:
+    return {
+        "configured": csv_path is not None or bool(auto_summary.get("enabled")),
+        "path": None if csv_path is None else str(csv_path),
+        "matched_rows": combined_rows,
+        "csv_rows": csv_rows,
+        "auto_rows": auto_rows,
+        "auto": auto_summary,
+    }
+
+
+def market_line_source_counts(market_lines: dict[tuple[str, str, str], MarketLine]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for line in market_lines.values():
+        counts[line.source] = counts.get(line.source, 0) + 1
+    return counts
 
 
 def matchup_key(date: str, home_team: str, away_team: str) -> tuple[str, str, str]:
