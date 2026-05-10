@@ -8,6 +8,7 @@ import {
   formatScoreTotal,
   formatTrainingError,
   isLiveGame,
+  liveMetrics,
   sortGames,
   teamLogoUrl
 } from "../web/src/format";
@@ -59,5 +60,34 @@ describe("web formatting helpers", () => {
     expect(formatScoreTotal(101, 99)).toBe("200");
     expect(formatScoreTotal("83", "78")).toBe("161");
     expect(formatScoreTotal("83", null)).toBe("-");
+  });
+
+  it("adds tracked total metrics separately from market total metrics", () => {
+    const metrics = liveMetrics({
+      teams: {
+        away: { abbreviation: "NYK", score: 78 },
+        home: { abbreviation: "BOS", score: 83 }
+      },
+      game_status: { clock: "9:25", period: 4 },
+      live_projection: {
+        projected_away_score: 98,
+        projected_home_score: 104,
+        projected_total: 202,
+        market_total_line: 203,
+        p_over: 0.45,
+        tracked_total_line: 215.5,
+        tracked_p_over: 0.08,
+        model_inputs: { clock: "9:25", period: 4 }
+      }
+    });
+
+    expect(metrics).toEqual(
+      expect.arrayContaining([
+        { label: "Market total", value: "203" },
+        { label: "Market over", value: "45%" },
+        { label: "Tracked total", value: "215.5" },
+        { label: "Tracked over", value: "8%" }
+      ])
+    );
   });
 });

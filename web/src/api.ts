@@ -22,9 +22,13 @@ export async function fetchLiveGames(league: League, signal?: AbortSignal): Prom
 export async function fetchProjection(
   eventId: string,
   scope: "all" | "live",
+  trackedTotalLine?: number | null,
   signal?: AbortSignal
 ): Promise<ProjectionPayload> {
   const params = new URLSearchParams({ event_id: eventId, scope });
+  if (trackedTotalLine !== null && trackedTotalLine !== undefined) {
+    params.set("tracked_total_line", String(trackedTotalLine));
+  }
   return fetchJson<ProjectionPayload>(`/api/nba/projections?${params.toString()}`, { signal });
 }
 

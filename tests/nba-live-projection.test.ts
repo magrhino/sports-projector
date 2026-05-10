@@ -61,6 +61,31 @@ describe("NBA live projection model", () => {
     expect(result.rate_weights.prior).toBeGreaterThan(result.rate_weights.full_game);
   });
 
+  it("computes tracked over probability without replacing market fields", () => {
+    const result = projectLiveNbaScore({
+      currentHomeScore: 26,
+      currentAwayScore: 17,
+      period: 1,
+      clock: "4:32",
+      marketTotalLine: 226.5,
+      trackedTotalLine: 240,
+      recentPoints: 27,
+      recentMinutes: 4,
+      recentHomePoints: 26,
+      recentAwayPoints: 1,
+      isPlayoffs: true
+    });
+
+    expect(result.market_total_line).toBe(226.5);
+    expect(result.tracked_total_line).toBe(240);
+    expect(result.difference_vs_market).toBeCloseTo(result.projected_total - 226.5, 2);
+    expect(result.tracked_difference_vs_total).toBeCloseTo(result.projected_total - 240, 2);
+    expect(result.p_over).not.toBe(result.tracked_p_over);
+    expect(result.p_over).not.toBeNull();
+    expect(result.tracked_p_over).not.toBeNull();
+    expect(result.p_over ?? 0).toBeGreaterThan(result.tracked_p_over ?? 0);
+  });
+
   it("shrinks early Q1 cold starts toward the market prior", () => {
     const result = projectLiveNbaScore({
       currentHomeScore: 6,

@@ -173,6 +173,13 @@ function WorkspaceView() {
           loadingMessage={projections.loadingMessage}
           error={projections.error}
           inFlight={projections.inFlight}
+          trackingEnabled={Boolean(projections.selectedGame && isLiveGame(projections.selectedGame) && league === "nba")}
+          trackedTotalInput={projections.trackedTotalInput}
+          trackedTotalLine={projections.trackedTotalLine}
+          trackedTotalError={projections.trackedTotalError}
+          onTrackedTotalInput={projections.changeTrackedTotalInput}
+          onApplyTrackedTotal={projections.applyTrackedTotal}
+          onClearTrackedTotal={projections.clearTrackedTotal}
           onRefresh={projections.refresh}
         />
 
@@ -551,8 +558,20 @@ function ProjectionPanel(props: {
   loadingMessage: string;
   error: string;
   inFlight: boolean;
+  trackingEnabled: boolean;
+  trackedTotalInput: string;
+  trackedTotalLine: number | null;
+  trackedTotalError: string;
+  onTrackedTotalInput: (value: string) => void;
+  onApplyTrackedTotal: () => void;
+  onClearTrackedTotal: () => void;
   onRefresh: () => void;
 }) {
+  function submitTrackedTotal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    props.onApplyTrackedTotal();
+  }
+
   return (
     <section className="projection-panel" aria-labelledby="projection-title">
       <div className="panel-heading projection-heading">
@@ -569,6 +588,41 @@ function ProjectionPanel(props: {
       <div className="projection-status" role="status" aria-live="polite">
         {props.loadingMessage || "\u00a0"}
       </div>
+      {props.trackingEnabled ? (
+        <form className="tracked-total-form" onSubmit={submitTrackedTotal}>
+          <label className="tracked-total-field">
+            <span>Tracked total</span>
+            <input
+              value={props.trackedTotalInput}
+              onChange={(event) => props.onTrackedTotalInput(event.target.value)}
+              name="tracked_total_line"
+              type="number"
+              inputMode="decimal"
+              min={120}
+              max={320}
+              step="any"
+              placeholder="203.5"
+            />
+          </label>
+          <div className="tracked-total-actions">
+            <button type="submit" className="primary-button" disabled={props.inFlight}>
+              Apply
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={props.inFlight || (!props.trackedTotalInput && props.trackedTotalLine === null)}
+              onClick={props.onClearTrackedTotal}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="tracked-total-state" role="status" aria-live="polite">
+            {props.trackedTotalError ||
+              (props.trackedTotalLine !== null ? `Tracking ${props.trackedTotalLine}` : "\u00a0")}
+          </div>
+        </form>
+      ) : null}
       {props.error ? (
         <div className="error-message" role="alert">
           {props.error}

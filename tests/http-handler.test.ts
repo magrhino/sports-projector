@@ -130,6 +130,34 @@ describe("createHttpHandler", () => {
     expect(historicalInputs[0]).not.toHaveProperty("market_total");
   });
 
+  it("tracks a custom live total without replacing the market line", async () => {
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+        kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)])
+      }),
+      "/api/nba/projections?event_id=401&scope=live&tracked_total_line=215.5"
+    );
+
+    const payload = JSON.parse(response.body) as ProjectionResponse;
+    const projection = payload.live_projection.data?.live_projection;
+    expect(response.statusCode).toBe(200);
+    expect(payload.live_projection.status).toBe("ok");
+    expect(projection?.market_total_line).toBe(203);
+    expect(projection?.tracked_total_line).toBe(215.5);
+    expect(projection?.p_over).not.toBe(projection?.tracked_p_over);
+  });
+
+  it("returns 400 for invalid tracked live totals", async () => {
+    const response = await callHandler(
+      createHttpHandler(),
+      "/api/nba/projections?event_id=401&scope=live&tracked_total_line=99"
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toMatch(/tracked_total_line/i);
+  });
+
   it("preserves stale historical artifact errors instead of displaying fallback projections", async () => {
     const response = await callHandler(
       createHttpHandler({
@@ -839,6 +867,9 @@ interface ProjectionResponse {
     data?: {
       live_projection: {
         market_total_line: number | null;
+        p_over?: number | null;
+        tracked_total_line?: number | null;
+        tracked_p_over?: number | null;
         learned_projection?: unknown;
         data_quality: {
           status: string;

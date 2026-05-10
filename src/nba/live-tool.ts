@@ -21,7 +21,8 @@ import {
   EventIdSchema,
   KalshiMilestoneIdSchema,
   KalshiTickerListSchema,
-  KalshiTickerSchema
+  KalshiTickerSchema,
+  NbaTotalLineSchema
 } from "../lib/validation.js";
 import {
   extractRecentScoringFromGameStats,
@@ -43,6 +44,7 @@ export const LiveProjectionInputSchema = z.object({
   kalshi_event_ticker: KalshiTickerSchema.optional(),
   kalshi_market_tickers: KalshiTickerListSchema.optional(),
   kalshi_milestone_id: KalshiMilestoneIdSchema.optional(),
+  tracked_total_line: NbaTotalLineSchema.optional(),
   is_playoffs: z.boolean().optional(),
   include_debug: z.boolean().default(false)
 });
@@ -194,13 +196,14 @@ export async function projectNbaLiveScore(
   const fouls = extractFouls(milestoneContext.liveData?.details ?? {});
   const isCompleted = game.status.completed;
   const projection = isCompleted
-    ? completedProjection(home.score, away.score, marketContext.marketTotalLine)
+    ? completedProjection(home.score, away.score, marketContext.marketTotalLine, input.tracked_total_line ?? null)
     : projectLiveNbaScore({
         currentHomeScore: home.score,
         currentAwayScore: away.score,
         period,
         clock,
         marketTotalLine: marketContext.marketTotalLine,
+        trackedTotalLine: input.tracked_total_line,
         recentPoints: recentScoring?.points,
         recentMinutes: recentScoring?.minutes,
         recentHomePoints: recentScoring?.home_points,
@@ -229,6 +232,9 @@ export async function projectNbaLiveScore(
     market_total_line: projection.market_total_line,
     difference_vs_market: projection.difference_vs_market,
     p_over: projection.p_over,
+    tracked_total_line: projection.tracked_total_line,
+    tracked_difference_vs_total: projection.tracked_difference_vs_total,
+    tracked_p_over: projection.tracked_p_over,
     residual_sigma: projection.residual_sigma,
     projection_uncertainty: projection.projection_uncertainty,
     calibration: {
@@ -556,9 +562,15 @@ function liveStatus(game: EspnNormalizedGame): DataQuality["status"] {
   return game.status.state === "in" ? "live" : "not_live";
 }
 
-function completedProjection(homeScore: number, awayScore: number, marketTotalLine: number | null) {
+function completedProjection(
+  homeScore: number,
+  awayScore: number,
+  marketTotalLine: number | null,
+  trackedTotalLine: number | null
+) {
   const total = homeScore + awayScore;
   const difference = marketTotalLine === null ? null : total - marketTotalLine;
+  const trackedDifference = trackedTotalLine === null ? null : total - trackedTotalLine;
   return {
     current_total: total,
     elapsed_minutes: 48,
@@ -590,6 +602,9 @@ function completedProjection(homeScore: number, awayScore: number, marketTotalLi
     market_total_line: marketTotalLine,
     difference_vs_market: difference === null ? null : Math.round(difference * 100) / 100,
     p_over: null,
+    tracked_total_line: trackedTotalLine,
+    tracked_difference_vs_total: trackedDifference === null ? null : Math.round(trackedDifference * 100) / 100,
+    tracked_p_over: null,
     relationship_to_market:
       difference === null ? "unavailable" : Math.abs(difference) <= 1 ? "near_market" : difference > 0 ? "above_market" : "below_market",
     most_likely_score: {

@@ -192,8 +192,14 @@ export function liveMetrics(data: Record<string, unknown>): ProjectionMetric[] {
       value: formatScoreLine(displayTeamCode(away, "Away"), away.score, displayTeamCode(home, "Home"), home.score)
     },
     { label: "Market total", value: formatNullableNumber(projection.market_total_line) },
-    { label: "Over probability", value: formatProbability(projection.p_over) }
+    { label: "Market over", value: formatProbability(projection.p_over) }
   ];
+  if (typeof projection.tracked_total_line === "number" && Number.isFinite(projection.tracked_total_line)) {
+    metrics.push(
+      { label: "Tracked total", value: formatNullableNumber(projection.tracked_total_line) },
+      { label: "Tracked over", value: formatProbability(projection.tracked_p_over) }
+    );
+  }
   if (learned) {
     metrics.push(
       {

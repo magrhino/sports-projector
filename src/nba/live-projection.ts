@@ -6,6 +6,7 @@ export interface LiveScoreProjectionInput {
   period: number;
   clock: string;
   marketTotalLine?: number | null;
+  trackedTotalLine?: number | null;
   pregameTotal?: number | null;
   recentPoints?: number | null;
   recentMinutes?: number | null;
@@ -47,6 +48,9 @@ export interface LiveScoreProjectionResult {
   market_total_line: number | null;
   difference_vs_market: number | null;
   p_over: number | null;
+  tracked_total_line: number | null;
+  tracked_difference_vs_total: number | null;
+  tracked_p_over: number | null;
   relationship_to_market: "above_market" | "below_market" | "near_market" | "unavailable";
   most_likely_score: {
     home: number;
@@ -161,9 +165,11 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
   });
   const marketTotalLine = input.marketTotalLine ?? null;
   const difference = marketTotalLine === null ? null : projectedTotal - marketTotalLine;
+  const trackedTotalLine = input.trackedTotalLine ?? null;
+  const trackedDifference = trackedTotalLine === null ? null : projectedTotal - trackedTotalLine;
   const sigma = residualSigma(minutesLeft);
-  const pOver =
-    marketTotalLine === null ? null : clampProbability(1 - normalCdf((marketTotalLine - projectedTotal) / sigma));
+  const pOver = probabilityOverTotal(projectedTotal, marketTotalLine, sigma);
+  const trackedPOver = probabilityOverTotal(projectedTotal, trackedTotalLine, sigma);
   const projectionUncertainty = projectionUncertaintyTotal(sigma, minutesLeft);
 
   return {
@@ -197,6 +203,9 @@ export function projectLiveNbaScore(input: LiveScoreProjectionInput): LiveScoreP
     market_total_line: marketTotalLine,
     difference_vs_market: difference === null ? null : roundStat(difference),
     p_over: pOver === null ? null : roundProbability(pOver),
+    tracked_total_line: trackedTotalLine,
+    tracked_difference_vs_total: trackedDifference === null ? null : roundStat(trackedDifference),
+    tracked_p_over: trackedPOver === null ? null : roundProbability(trackedPOver),
     relationship_to_market: marketRelationship(difference),
     most_likely_score: score,
     model_inputs: {
@@ -658,6 +667,10 @@ function projectionUncertaintyTotal(sigma: number, minutesLeft: number): number 
 
 function clampProbability(value: number): number {
   return clamp(value, 0.01, 0.99);
+}
+
+function probabilityOverTotal(projectedTotal: number, totalLine: number | null, sigma: number): number | null {
+  return totalLine === null ? null : clampProbability(1 - normalCdf((totalLine - projectedTotal) / sigma));
 }
 
 function mostLikelyScore(input: {

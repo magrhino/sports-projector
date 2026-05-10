@@ -5,7 +5,7 @@ import { KalshiClient } from "../clients/kalshi.js";
 import type { CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
-import { EventIdSchema } from "../lib/validation.js";
+import { EventIdSchema, NbaTotalLineSchema } from "../lib/validation.js";
 import {
   HistoricalProjectionClient,
   HistoricalProjectionError,
@@ -38,6 +38,12 @@ export interface NbaProjectionClients {
 }
 
 type ProjectionScope = "all" | "live";
+
+interface ParsedProjectionInput {
+  eventId: string;
+  scope: ProjectionScope;
+  trackedTotalLine: number | null;
+}
 
 type ProjectionSection =
   | {
@@ -112,7 +118,8 @@ export async function getNbaProjections(
     espnClient,
     kalshiClient,
     clients.liveTrackingStore,
-    clients.settingsStore
+    clients.settingsStore,
+    parsed.trackedTotalLine
   );
   const body: NbaProjectionResult["body"] = {
     source: "nba_projection",
@@ -140,7 +147,7 @@ export async function getNbaProjections(
   };
 }
 
-function parseProjectionInput(searchParams: URLSearchParams): { eventId: string; scope: ProjectionScope } | { error: string } {
+function parseProjectionInput(searchParams: URLSearchParams): ParsedProjectionInput | { error: string } {
   const eventId = EventIdSchema.safeParse(searchParams.get("event_id") ?? "");
   if (!eventId.success) {
     return { error: eventId.error.issues[0]?.message ?? "Invalid event_id query parameter." };
@@ -151,10 +158,35 @@ function parseProjectionInput(searchParams: URLSearchParams): { eventId: string;
     return { error: "Scope must be all or live." };
   }
 
+  const trackedTotalLine = parseTrackedTotalLine(searchParams.get("tracked_total_line"));
+  if ("error" in trackedTotalLine) {
+    return trackedTotalLine;
+  }
+
   return {
     eventId: eventId.data,
-    scope: rawScope
+    scope: rawScope,
+    trackedTotalLine: trackedTotalLine.value
   };
+}
+
+function parseTrackedTotalLine(rawValue: string | null): { value: number | null } | { error: string } {
+  if (rawValue === null) {
+    return { value: null };
+  }
+
+  const value = rawValue.trim();
+  if (!value) {
+    return { error: "tracked_total_line must be a number between 120 and 320." };
+  }
+
+  const parsed = Number(value);
+  const totalLine = NbaTotalLineSchema.safeParse(parsed);
+  if (!Number.isFinite(parsed) || !totalLine.success) {
+    return { error: "tracked_total_line must be a number between 120 and 320." };
+  }
+
+  return { value: totalLine.data };
 }
 
 async function projectLiveSection(
@@ -162,11 +194,12 @@ async function projectLiveSection(
   espnClient: EspnSummaryClient,
   kalshiClient: KalshiClient,
   liveTrackingStore?: LiveTrackingStore,
-  settingsStore?: SettingsStore
+  settingsStore?: SettingsStore,
+  trackedTotalLine?: number | null
 ): Promise<ProjectionSection> {
   try {
     const data = await projectNbaLiveScore(
-      { event_id: eventId, include_debug: Boolean(liveTrackingStore) },
+      { event_id: eventId, tracked_total_line: trackedTotalLine ?? undefined, include_debug: Boolean(liveTrackingStore) },
       espnClient as EspnClient,
       kalshiClient
     );

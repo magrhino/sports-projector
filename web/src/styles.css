@@ -657,6 +657,31 @@ tr:last-child td {
   min-height: 22px;
 }
 
+.tracked-total-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) auto minmax(130px, 1fr);
+  gap: 10px;
+  align-items: end;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 12px;
+  background: var(--surface-subtle);
+}
+
+.tracked-total-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.tracked-total-state {
+  align-self: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
 .projection-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
@@ -836,6 +861,10 @@ tr:last-child td {
   }
 
   .search-form {
+    grid-template-columns: 1fr;
+  }
+
+  .tracked-total-form {
     grid-template-columns: 1fr;
   }
 

@@ -130,6 +130,9 @@ export function useProjectionDetail(league: League) {
   const [loadingMessage, setLoadingMessage] = useState("");
   const [error, setError] = useState("");
   const [inFlight, setInFlight] = useState(false);
+  const [trackedTotalInput, setTrackedTotalInput] = useState("");
+  const [trackedTotalLine, setTrackedTotalLine] = useState<number | null>(null);
+  const [trackedTotalError, setTrackedTotalError] = useState("");
   const requestId = useRef(0);
 
   const clear = useCallback(() => {
@@ -139,17 +142,20 @@ export function useProjectionDetail(league: League) {
     setLoadingMessage("");
     setError("");
     setInFlight(false);
+    setTrackedTotalInput("");
+    setTrackedTotalLine(null);
+    setTrackedTotalError("");
   }, []);
 
   const loadProjection = useCallback(
-    async (game: Game, scope: "all" | "live") => {
+    async (game: Game, scope: "all" | "live", trackedLine: number | null) => {
       const id = ++requestId.current;
       setInFlight(true);
       setError("");
       setLoadingMessage(scope === "live" ? "Updating live projection..." : "Loading projections...");
 
       try {
-        const nextPayload = await fetchProjection(game.id, scope);
+        const nextPayload = await fetchProjection(game.id, scope, trackedLine);
         if (id !== requestId.current) {
           return;
         }
@@ -179,6 +185,9 @@ export function useProjectionDetail(league: League) {
       setError("");
       setLoadingMessage("");
       setInFlight(false);
+      setTrackedTotalInput("");
+      setTrackedTotalLine(null);
+      setTrackedTotalError("");
 
       if (league !== "nba") {
         setError("Projection detail is only available for NBA games.");
@@ -191,7 +200,7 @@ export function useProjectionDetail(league: League) {
         return;
       }
 
-      await loadProjection(game, "all");
+      await loadProjection(game, "all", null);
     },
     [league, loadProjection]
   );
@@ -200,7 +209,37 @@ export function useProjectionDetail(league: League) {
     if (!selectedGame) {
       return;
     }
-    void loadProjection(selectedGame, isLiveGame(selectedGame) ? "live" : "all");
+    void loadProjection(selectedGame, isLiveGame(selectedGame) ? "live" : "all", trackedTotalLine);
+  }, [loadProjection, selectedGame, trackedTotalLine]);
+
+  const changeTrackedTotalInput = useCallback((value: string) => {
+    setTrackedTotalInput(value);
+    setTrackedTotalError("");
+  }, []);
+
+  const applyTrackedTotal = useCallback(() => {
+    if (!selectedGame) {
+      return;
+    }
+
+    const parsed = parseTrackedTotal(trackedTotalInput);
+    if ("error" in parsed) {
+      setTrackedTotalError(parsed.error);
+      return;
+    }
+
+    setTrackedTotalLine(parsed.value);
+    setTrackedTotalError("");
+    void loadProjection(selectedGame, isLiveGame(selectedGame) ? "live" : "all", parsed.value);
+  }, [loadProjection, selectedGame, trackedTotalInput]);
+
+  const clearTrackedTotal = useCallback(() => {
+    setTrackedTotalInput("");
+    setTrackedTotalLine(null);
+    setTrackedTotalError("");
+    if (selectedGame) {
+      void loadProjection(selectedGame, isLiveGame(selectedGame) ? "live" : "all", null);
+    }
   }, [loadProjection, selectedGame]);
 
   useEffect(() => {
@@ -210,12 +249,12 @@ export function useProjectionDetail(league: League) {
 
     const timer = window.setInterval(() => {
       if (!inFlight) {
-        void loadProjection(selectedGame, "live");
+        void loadProjection(selectedGame, "live", trackedTotalLine);
       }
     }, 10000);
 
     return () => window.clearInterval(timer);
-  }, [inFlight, league, loadProjection, selectedGame]);
+  }, [inFlight, league, loadProjection, selectedGame, trackedTotalLine]);
 
   const detailGame = payload?.game || selectedGame;
   const title = detailGame?.short_name || detailGame?.name || (payload?.event_id ? `ESPN event ${payload.event_id}` : "Projection");
@@ -236,10 +275,30 @@ export function useProjectionDetail(league: League) {
     loadingMessage,
     error,
     inFlight,
+    trackedTotalInput,
+    trackedTotalLine,
+    trackedTotalError,
+    changeTrackedTotalInput,
+    applyTrackedTotal,
+    clearTrackedTotal,
     selectGame,
     refresh,
     clear
   };
+}
+
+function parseTrackedTotal(value: string): { value: number | null } | { error: string } {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null };
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 120 || parsed > 320) {
+    return { error: "Enter a total from 120 to 320." };
+  }
+
+  return { value: parsed };
 }
 
 export function useLiveTrackerStatus() {

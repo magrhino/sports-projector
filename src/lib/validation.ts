@@ -120,6 +120,7 @@ export const LimitSchema = z.number().int().min(1).max(100).default(20);
 export const KalshiLargeLimitSchema = z.number().int().min(1).max(1000).default(100);
 export const DepthSchema = z.number().int().min(0).max(100).default(10);
 export const UnixTimestampSchema = z.number().int().min(0);
+export const NbaTotalLineSchema = z.number().min(120).max(320);
 
 export function looksLikeUrl(value: string): boolean {
   return /:\/\//.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value) || /[/?#\\]/.test(value);

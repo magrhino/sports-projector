@@ -82,6 +82,7 @@ These tools use transparent formulas and return assumptions/caveats. They do not
 - `project_nba_live_score`: project the most likely NBA final score for an ESPN event id using public ESPN live state and public Kalshi total-market/live-data endpoints when available.
 
 Historical projection reads local artifacts only. Live projection degrades to ESPN score/pace projection with caveats when Kalshi context is unavailable.
+For live NBA projections, optional `tracked_total_line` computes a separate tracked over probability while preserving the market total line and market over probability fields.
 
 ## Example Prompts
 
