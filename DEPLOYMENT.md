@@ -288,6 +288,8 @@ SPORTS_PROJECTOR_LIVE_DB_PATH=data/live-tracking/nba-live.sqlite \
 npm run start:web
 ```
 
+At startup, live tracking runs `PRAGMA quick_check` before opening the SQLite store. If the database is corrupt, the app quarantines the DB plus `-wal` and `-shm` files in a timestamped sibling directory, runs `sqlite3 .recover --ignore-freelist`, validates the recovered DB, and starts with the recovered copy. If recovery fails, the quarantined files are preserved and the app starts with a fresh empty DB. Set `SPORTS_PROJECTOR_LIVE_DB_RECOVERY=off` to disable this self-heal path.
+
 Training can also be triggered through the API from a loopback client:
 
 ```bash
@@ -347,6 +349,8 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 | `SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES` | `10` | Maximum current and historical Kalshi market pages fetched per refresh, clamped from 0 to 100 |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED` | `false` | Enables NBA live-game polling and snapshot persistence |
 | `SPORTS_PROJECTOR_LIVE_DB_PATH` | `data/live-tracking/nba-live.sqlite` | SQLite path for live snapshots and trained models |
+| `SPORTS_PROJECTOR_LIVE_DB_RECOVERY` | `auto` | Enables startup quick-check, quarantine, SQLite `.recover`, and fresh-DB fallback for corrupt live tracking storage; set to `off` to disable |
+| `SPORTS_PROJECTOR_SQLITE_BIN` | `sqlite3` | SQLite CLI executable used for live DB recovery |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS` | `30` | Tracker polling interval, clamped from 5 to 300 seconds |
 | `SPORTS_PROJECTOR_LIVE_TRACKING_CONCURRENCY` | `2` | Concurrent live event projections, clamped from 1 to 8 |
 | `SPORTS_PROJECTOR_LIVE_MODEL_MIN_SNAPSHOTS` | `50` | Minimum finalized snapshots required to train the live correction model |

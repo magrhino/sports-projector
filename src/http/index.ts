@@ -4,6 +4,7 @@ import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
 import { SettingsStore } from "../lib/settings.js";
+import { prepareLiveTrackingDatabase } from "../nba/live-db-recovery.js";
 import { HistoricalRefreshScheduler, historicalRefreshConfigFromEnv } from "../nba/historical-refresh.js";
 import type { HistoricalProjectionClient } from "../nba/historical-client.js";
 import { LiveModelTrainingScheduler } from "../nba/live-training-scheduler.js";
@@ -133,6 +134,11 @@ function createLiveTrackingContext(
   if (!config.enabled) {
     return null;
   }
+  prepareLiveTrackingDatabase({
+    dbPath: config.dbPath,
+    mode: config.dbRecovery,
+    sqliteBin: config.sqliteBin
+  });
   const store = new LiveTrackingStore(config.dbPath);
   const readSettings = () => settingsStore.read();
   const tracker = maybeCreateLiveTracker({

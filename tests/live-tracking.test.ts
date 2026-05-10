@@ -1,10 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import Database from "better-sqlite3";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
+import { prepareLiveTrackingDatabase } from "../src/nba/live-db-recovery.js";
 import { LiveModelTrainingScheduler } from "../src/nba/live-training-scheduler.js";
 import { LiveNbaTracker } from "../src/nba/live-tracker.js";
 import { LiveTrackingStore, type LiveTrackingConfig } from "../src/nba/live-tracking-store.js";
@@ -107,6 +109,98 @@ describe("LiveTrackingStore", () => {
       });
     } finally {
       cleanup();
+    }
+  });
+});
+
+describe("Live tracking database recovery", () => {
+  it("passes a healthy database without creating quarantine files", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-live-recovery-"));
+    const dbPath = path.join(dir, "nba-live.sqlite");
+    const store = new LiveTrackingStore(dbPath);
+    store.close();
+
+    try {
+      const result = prepareLiveTrackingDatabase({
+        dbPath,
+        sqliteBin: path.join(dir, "missing-sqlite3"),
+        logger: silentRecoveryLogger()
+      });
+
+      expect(result.status).toBe("healthy");
+      expect(quarantineDirs(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a corrupt database through the configured sqlite tool", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-live-recovery-"));
+    const dbPath = path.join(dir, "nba-live.sqlite");
+    writeFileSync(dbPath, "not a sqlite database");
+    writeFileSync(`${dbPath}-wal`, "stale wal");
+    writeFileSync(`${dbPath}-shm`, "stale shm");
+
+    try {
+      const result = prepareLiveTrackingDatabase({
+        dbPath,
+        sqliteBin: writeFakeSqliteBin(dir),
+        logger: silentRecoveryLogger()
+      });
+
+      expect(result.status).toBe("recovered");
+      if (result.status !== "recovered") {
+        throw new Error("expected recovered database");
+      }
+      expect(result.counts).toEqual({
+        games: 1,
+        snapshots: 1,
+        models: 1
+      });
+      expect(quickCheckRows(dbPath)).toEqual(["ok"]);
+      expect(existsSync(path.join(result.quarantineDir, "nba-live.sqlite"))).toBe(true);
+      expect(existsSync(path.join(result.quarantineDir, "nba-live.sqlite-wal"))).toBe(true);
+      expect(existsSync(path.join(result.quarantineDir, "nba-live.sqlite-shm"))).toBe(true);
+
+      const store = new LiveTrackingStore(dbPath);
+      try {
+        expect(store.status(true).snapshots).toBe(1);
+        expect(store.loadLatestModel()?.sample_count).toBe(1);
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines corrupt files and starts fresh when recovery fails", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-live-recovery-"));
+    const dbPath = path.join(dir, "nba-live.sqlite");
+    writeFileSync(dbPath, "not a sqlite database");
+
+    try {
+      const result = prepareLiveTrackingDatabase({
+        dbPath,
+        sqliteBin: path.join(dir, "missing-sqlite3"),
+        logger: silentRecoveryLogger()
+      });
+
+      expect(result.status).toBe("fresh");
+      if (result.status !== "fresh") {
+        throw new Error("expected fresh database fallback");
+      }
+      expect(existsSync(path.join(result.quarantineDir, "nba-live.sqlite"))).toBe(true);
+      expect(quickCheckRows(dbPath)).toEqual(["ok"]);
+
+      const store = new LiveTrackingStore(dbPath);
+      try {
+        expect(store.status(true).snapshots).toBe(0);
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -297,6 +391,8 @@ describe("LiveNbaTracker", () => {
         {
           enabled: true,
           dbPath: store.dbPath,
+          dbRecovery: "auto",
+          sqliteBin: "sqlite3",
           intervalSeconds: 30,
           concurrency: 2,
           minSnapshots: 50
@@ -478,10 +574,156 @@ function config(store: LiveTrackingStore): LiveTrackingConfig {
   return {
     enabled: true,
     dbPath: store.dbPath,
+    dbRecovery: "auto",
+    sqliteBin: "sqlite3",
     intervalSeconds: 30,
     concurrency: 2,
     minSnapshots: 50
   };
+}
+
+function quarantineDirs(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.includes(".corrupt-"));
+}
+
+function silentRecoveryLogger() {
+  return {
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn()
+  };
+}
+
+function quickCheckRows(dbPath: string): string[] {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const rows = db.prepare("PRAGMA quick_check").all() as Array<Record<string, unknown>>;
+    return rows.map((row) => String(Object.values(row)[0]));
+  } finally {
+    db.close();
+  }
+}
+
+function writeFakeSqliteBin(dir: string): string {
+  const scriptPath = path.join(dir, "fake-sqlite.cjs");
+  writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const moduleApi = require("node:module");
+const requireFromProject = moduleApi.createRequire(process.cwd() + "/package.json");
+const Database = requireFromProject("better-sqlite3");
+const args = process.argv.slice(2);
+if (args.length === 2 && args[1] === ".recover --ignore-freelist") {
+  process.stdout.write(${JSON.stringify(recoveredSql())});
+  process.exit(0);
+}
+if (args.length === 1) {
+  const db = new Database(args[0]);
+  try {
+    db.exec(fs.readFileSync(0, "utf8"));
+  } finally {
+    db.close();
+  }
+  process.exit(0);
+}
+process.stderr.write("unexpected fake sqlite invocation: " + args.join(" "));
+process.exit(2);
+`
+  );
+  chmodSync(scriptPath, 0o755);
+  return scriptPath;
+}
+
+function recoveredSql(): string {
+  return `
+CREATE TABLE live_games (
+  event_id TEXT PRIMARY KEY,
+  home_team_id TEXT,
+  home_team_name TEXT,
+  home_team_abbreviation TEXT,
+  away_team_id TEXT,
+  away_team_name TEXT,
+  away_team_abbreviation TEXT,
+  start_time TEXT,
+  status_state TEXT,
+  status_detail TEXT,
+  current_home_score REAL,
+  current_away_score REAL,
+  final_home_score REAL,
+  final_away_score REAL,
+  first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finalized_at TEXT
+);
+CREATE TABLE live_projection_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  period INTEGER,
+  clock TEXT,
+  current_home_score REAL,
+  current_away_score REAL,
+  projected_home_score REAL,
+  projected_away_score REAL,
+  projected_total REAL,
+  projected_home_margin REAL,
+  projected_remaining_points REAL,
+  market_total_line REAL,
+  difference_vs_market REAL,
+  p_over REAL,
+  relationship_to_market TEXT,
+  market_line_source TEXT,
+  selected_market_ticker TEXT,
+  selected_market_yes_bid_cents REAL,
+  selected_market_yes_ask_cents REAL,
+  selected_market_last_price_cents REAL,
+  selected_market_json TEXT,
+  model_inputs_json TEXT,
+  source_urls_json TEXT,
+  raw_projection_json TEXT NOT NULL,
+  elapsed_minutes REAL,
+  minutes_left REAL,
+  margin REAL,
+  full_game_rate REAL,
+  prior_rate REAL,
+  recent_rate REAL,
+  blended_rate REAL,
+  learned_projected_home_score REAL,
+  learned_projected_away_score REAL,
+  learned_projected_total REAL,
+  learned_projected_home_margin REAL,
+  FOREIGN KEY(event_id) REFERENCES live_games(event_id)
+);
+CREATE INDEX idx_live_snapshots_event ON live_projection_snapshots(event_id, captured_at);
+CREATE TABLE live_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version INTEGER NOT NULL,
+  trained_at TEXT NOT NULL,
+  sample_count INTEGER NOT NULL,
+  feature_columns_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  artifact_json TEXT NOT NULL
+);
+INSERT INTO live_games (event_id, home_team_name, away_team_name, status_state)
+VALUES ('401', 'Home', 'Away', 'post');
+INSERT INTO live_projection_snapshots (
+  id, event_id, captured_at, trigger, current_home_score, current_away_score,
+  projected_total, projected_home_margin, raw_projection_json
+) VALUES (1, '401', '2026-04-26T01:00:00.000Z', 'tracker', 50, 47, 201, 3, '{}');
+INSERT INTO live_models (
+  id, version, trained_at, sample_count, feature_columns_json, metrics_json, artifact_json
+) VALUES (
+  1,
+  1,
+  '2026-04-26T02:00:00.000Z',
+  1,
+  '[]',
+  '{}',
+  '{"version":1,"trained_at":"2026-04-26T02:00:00.000Z","sample_count":1,"feature_columns":[],"coefficients":[],"intercept":0,"metrics":{},"accuracy_gate":{"passed":false,"reasons":[]}}'
+);
+`;
 }
 
 async function flushPromises(): Promise<void> {

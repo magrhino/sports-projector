@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import type { LiveDbRecoveryMode } from "./live-db-recovery.js";
 import {
   evaluateLiveModel,
   liveModelAccuracyGate,
@@ -17,6 +18,8 @@ import {
 export interface LiveTrackingConfig {
   enabled: boolean;
   dbPath: string;
+  dbRecovery: LiveDbRecoveryMode;
+  sqliteBin: string;
   intervalSeconds: number;
   concurrency: number;
   minSnapshots: number;
@@ -514,10 +517,16 @@ export function liveTrackingConfig(env: NodeJS.ProcessEnv = process.env): LiveTr
   return {
     enabled: parseBoolean(env.SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED),
     dbPath: path.resolve(root, env.SPORTS_PROJECTOR_LIVE_DB_PATH ?? "data/live-tracking/nba-live.sqlite"),
+    dbRecovery: parseRecoveryMode(env.SPORTS_PROJECTOR_LIVE_DB_RECOVERY),
+    sqliteBin: env.SPORTS_PROJECTOR_SQLITE_BIN?.trim() || "sqlite3",
     intervalSeconds: clampInteger(env.SPORTS_PROJECTOR_LIVE_TRACKING_INTERVAL_SECONDS, 30, 5, 300),
     concurrency: clampInteger(env.SPORTS_PROJECTOR_LIVE_TRACKING_CONCURRENCY, 2, 1, 8),
     minSnapshots: clampInteger(env.SPORTS_PROJECTOR_LIVE_MODEL_MIN_SNAPSHOTS, 50, 5, 100000)
   };
+}
+
+function parseRecoveryMode(value: string | undefined): LiveDbRecoveryMode {
+  return value?.toLowerCase() === "off" ? "off" : "auto";
 }
 
 function parseBoolean(value: string | undefined): boolean {

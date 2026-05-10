@@ -677,6 +677,8 @@ function createLiveTrackingContext(): LiveTrackingHttpContext & { cleanup: () =>
     config: {
       enabled: true,
       dbPath: store.dbPath,
+      dbRecovery: "auto",
+      sqliteBin: "sqlite3",
       intervalSeconds: 30,
       concurrency: 2,
       minSnapshots: 50
