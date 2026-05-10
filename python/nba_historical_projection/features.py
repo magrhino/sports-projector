@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import math
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,9 @@ TEAM_INDEX_CURRENT = {
     "Utah Jazz": 28,
     "Washington Wizards": 29,
 }
+
+BASELINE_TOTAL_FEATURE = "BASELINE_TOTAL"
+BASELINE_HOME_MARGIN_FEATURE = "BASELINE_HOME_MARGIN"
 
 
 def normalize_team_name(value: str) -> str:
@@ -122,6 +126,9 @@ def resolve_feature_value(
         "AWAY_UNAVAILABLE_VALUE",
     }:
         return numeric_or_none(defaults.get(column))
+    if column == BASELINE_TOTAL_FEATURE or column == BASELINE_HOME_MARGIN_FEATURE:
+        baseline = baseline_projection(home_stats, away_stats)
+        return baseline["total"] if column == BASELINE_TOTAL_FEATURE else baseline["home_margin"]
 
     if column == "HOME_MARKET_RATING":
         return snapshot_or_default(home_stats, "MARKET_RATING", defaults, column)
@@ -210,13 +217,125 @@ def resolve_skill_feature(
     return None
 
 
+def baseline_projection(home_stats: dict[str, Any], away_stats: dict[str, Any]) -> dict[str, float]:
+    home_offense = blended_team_points(home_stats, home=True)
+    away_offense = blended_team_points(away_stats, home=False)
+    home_defense = blended_team_allowed(home_stats, home=True)
+    away_defense = blended_team_allowed(away_stats, home=False)
+    home_expected = (home_offense + away_defense) / 2.0
+    away_expected = (away_offense + home_defense) / 2.0
+    total = home_expected + away_expected
+    margin = home_expected - away_expected
+
+    skill_total = skill_total_prior(home_stats, away_stats)
+    if skill_total is not None:
+        total = 0.65 * total + 0.35 * skill_total
+    market_environment = market_environment_prior(home_stats, away_stats)
+    if market_environment is not None:
+        total = 0.85 * total + 0.15 * market_environment
+
+    skill_margin = skill_margin_prior(home_stats, away_stats)
+    if skill_margin is not None:
+        margin = 0.65 * margin + 0.35 * skill_margin
+    home_elo = snapshot_number(home_stats, "ELO")
+    away_elo = snapshot_number(away_stats, "ELO")
+    if home_elo is not None and away_elo is not None:
+        margin += 0.015 * (home_elo - away_elo)
+    margin += 2.2
+    margin += 0.35 * clamp(
+        (snapshot_number(home_stats, "DAYS_REST") or 7.0)
+        - (snapshot_number(away_stats, "DAYS_REST") or 7.0),
+        -3.0,
+        3.0,
+    )
+    margin -= 1.0 if (snapshot_number(home_stats, "DAYS_REST") or 7.0) <= 1 else 0.0
+    margin += 1.0 if (snapshot_number(away_stats, "DAYS_REST") or 7.0) <= 1 else 0.0
+
+    return {
+        "total": round(clamp(total, 170.0, 270.0), 6),
+        "home_margin": round(clamp(margin, -35.0, 35.0), 6),
+    }
+
+
+def blended_team_points(stats: dict[str, Any], home: bool) -> float:
+    venue_key = "HOME_AVG_POINTS_FOR" if home else "AWAY_AVG_POINTS_FOR"
+    return weighted_average(
+        [
+            (snapshot_number(stats, "SEASON_AVG_POINTS_FOR"), 0.40),
+            (snapshot_number(stats, "ROLLING10_AVG_POINTS_FOR"), 0.30),
+            (snapshot_number(stats, "ROLLING3_AVG_POINTS_FOR"), 0.20),
+            (snapshot_number(stats, venue_key), 0.10),
+        ],
+        112.0,
+    )
+
+
+def blended_team_allowed(stats: dict[str, Any], home: bool) -> float:
+    venue_key = "HOME_AVG_POINTS_AGAINST" if home else "AWAY_AVG_POINTS_AGAINST"
+    return weighted_average(
+        [
+            (snapshot_number(stats, "SEASON_AVG_POINTS_AGAINST"), 0.40),
+            (snapshot_number(stats, "ROLLING10_AVG_POINTS_AGAINST"), 0.30),
+            (snapshot_number(stats, "ROLLING3_AVG_POINTS_AGAINST"), 0.20),
+            (snapshot_number(stats, venue_key), 0.10),
+        ],
+        112.0,
+    )
+
+
+def skill_total_prior(home_stats: dict[str, Any], away_stats: dict[str, Any]) -> float | None:
+    home_off = snapshot_number(home_stats, "OFF_SKILL_MEAN")
+    home_def = snapshot_number(home_stats, "DEF_SKILL_MEAN")
+    away_off = snapshot_number(away_stats, "OFF_SKILL_MEAN")
+    away_def = snapshot_number(away_stats, "DEF_SKILL_MEAN")
+    if home_off is None or home_def is None or away_off is None or away_def is None:
+        return None
+    return ((home_off + away_def) / 2.0) + ((away_off + home_def) / 2.0)
+
+
+def skill_margin_prior(home_stats: dict[str, Any], away_stats: dict[str, Any]) -> float | None:
+    home_off = snapshot_number(home_stats, "OFF_SKILL_MEAN")
+    home_def = snapshot_number(home_stats, "DEF_SKILL_MEAN")
+    away_off = snapshot_number(away_stats, "OFF_SKILL_MEAN")
+    away_def = snapshot_number(away_stats, "DEF_SKILL_MEAN")
+    if home_off is None or home_def is None or away_off is None or away_def is None:
+        return None
+    return ((home_off + away_def) / 2.0) - ((away_off + home_def) / 2.0)
+
+
+def market_environment_prior(home_stats: dict[str, Any], away_stats: dict[str, Any]) -> float | None:
+    home_total = snapshot_number(home_stats, "MARKET_TOTAL_ENVIRONMENT_PRIOR")
+    away_total = snapshot_number(away_stats, "MARKET_TOTAL_ENVIRONMENT_PRIOR")
+    if home_total is None or away_total is None:
+        return None
+    return (home_total + away_total) / 2.0
+
+
+def weighted_average(values: list[tuple[float | None, float]], default: float) -> float:
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for value, weight in values:
+        if value is None or value <= 0:
+            continue
+        weighted_sum += value * weight
+        total_weight += weight
+    if total_weight == 0:
+        return default
+    return weighted_sum / total_weight
+
+
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return min(maximum, max(minimum, value))
+
+
 def numeric_or_none(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def load_matchup_stats(

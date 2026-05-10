@@ -181,6 +181,29 @@ describe("createHttpHandler", () => {
     expect(payload.historical_projection?.error).toContain("stale");
   });
 
+  it("preserves invalid historical model health errors instead of displaying fallback projections", async () => {
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+        kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+        historicalClient: new HistoricalProjectionClient({
+          runCommand: async () => {
+            throw new HistoricalProjectionError(
+              "Historical artifact failed model health gates",
+              "invalid_model_health"
+            );
+          }
+        })
+      }),
+      "/api/nba/projections?event_id=401"
+    );
+
+    const payload = JSON.parse(response.body) as ProjectionResponse;
+    expect(response.statusCode).toBe(200);
+    expect(payload.historical_projection?.status).toBe("error");
+    expect(payload.historical_projection?.error).toContain("model health");
+  });
+
   it("uses the NBA Eastern game date for late UTC evening starts", async () => {
     const historicalInputs: Record<string, unknown>[] = [];
     const response = await callHandler(
@@ -710,6 +733,9 @@ function createHistoricalRefreshContext(): HistoricalRefreshHttpContext {
         sportsDbApiKey: "123",
         marketTotalsEnabled: true,
         marketTotalsMaxPages: 10,
+        espnTeamSchedulesEnabled: true,
+        espnLookbackSeasons: 2,
+        espnRateLimitPerMinute: 120,
         python: "python3",
         root: "/repo",
         artifactDir: "/repo/data/historical",

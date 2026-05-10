@@ -68,9 +68,9 @@ def validate_manifest(artifact_dir: str | Path, require_models: bool = True) -> 
         if not isinstance(model_config, dict):
             raise ArtifactError(f"manifest models.{model_key} must be an object")
         model_type = model_config.get("type")
-        if model_type not in {"xgboost_json", "linear_json"}:
+        if model_type not in {"xgboost_json", "linear_json", "ensemble_json"}:
             raise ArtifactError(
-                f"manifest models.{model_key}.type must be xgboost_json or linear_json"
+                f"manifest models.{model_key}.type must be xgboost_json, linear_json, or ensemble_json"
             )
         model_path = model_config.get("path")
         if not isinstance(model_path, str) or not model_path:

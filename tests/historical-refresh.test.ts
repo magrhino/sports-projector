@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
@@ -7,6 +7,7 @@ import {
   HistoricalRefreshScheduler,
   historicalRefreshArgs,
   historicalRefreshConfigFromEnv,
+  promoteHistoricalStagingDir,
   type HistoricalRefreshConfig
 } from "../src/nba/historical-refresh.js";
 
@@ -18,7 +19,9 @@ describe("historical refresh config", () => {
       SPORTS_PROJECTOR_HISTORICAL_REFRESH_LOOKAHEAD_DAYS: "1",
       SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS: "2467180, 2466030",
       SPORTS_PROJECTOR_SPORTSDB_API_KEY: "private",
-      SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES: "7"
+      SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES: "7",
+      SPORTS_PROJECTOR_HISTORICAL_REFRESH_ESPN_LOOKBACK_SEASONS: "3",
+      SPORTS_PROJECTOR_HISTORICAL_REFRESH_ESPN_RATE_LIMIT_PER_MINUTE: "90"
     });
 
     expect(config.enabled).toBe(true);
@@ -29,6 +32,9 @@ describe("historical refresh config", () => {
     expect(config.sportsDbApiKey).toBe("private");
     expect(config.marketTotalsEnabled).toBe(true);
     expect(config.marketTotalsMaxPages).toBe(7);
+    expect(config.espnTeamSchedulesEnabled).toBe(true);
+    expect(config.espnLookbackSeasons).toBe(3);
+    expect(config.espnRateLimitPerMinute).toBe(90);
   });
 
   it("can be disabled by env", () => {
@@ -162,6 +168,26 @@ describe("HistoricalRefreshScheduler", () => {
   });
 });
 
+describe("promoteHistoricalStagingDir", () => {
+  it("promotes staged artifacts atomically over an existing directory", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-promote-"));
+    try {
+      const target = path.join(dir, "historical");
+      const staging = path.join(dir, ".historical-refresh-abc");
+      mkdirSync(target);
+      mkdirSync(staging);
+      writeFileSync(path.join(target, "manifest.json"), JSON.stringify({ version: "old" }));
+      writeFileSync(path.join(staging, "manifest.json"), JSON.stringify({ version: "new" }));
+
+      promoteHistoricalStagingDir(staging, target);
+
+      expect(readFileSync(path.join(target, "manifest.json"), "utf-8")).toBe(JSON.stringify({ version: "new" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("historicalRefreshArgs", () => {
   it("passes enhanced freshness options to the Python importer by default", () => {
     expect(historicalRefreshArgs(config())).toEqual([
@@ -189,6 +215,12 @@ describe("historicalRefreshArgs", () => {
       "--skill-features",
       "score-based",
       "--experimental-market-decorrelation",
+      "--enforce-quality-gates",
+      "--espn-team-schedules",
+      "--espn-lookback-seasons",
+      "2",
+      "--espn-rate-limit-per-minute",
+      "120",
       "--auto-market-lines",
       "--market-lines-max-pages",
       "10",
@@ -210,6 +242,12 @@ describe("historicalRefreshArgs", () => {
       "3",
       "--lookahead-days",
       "2",
+      "--enforce-quality-gates",
+      "--espn-team-schedules",
+      "--espn-lookback-seasons",
+      "2",
+      "--espn-rate-limit-per-minute",
+      "120",
       "--auto-market-lines",
       "--market-lines-max-pages",
       "10",
@@ -220,6 +258,12 @@ describe("historicalRefreshArgs", () => {
 
   it("can disable automatic market total imports", () => {
     expect(historicalRefreshArgs({ ...config(), marketTotalsEnabled: false })).not.toContain("--auto-market-lines");
+  });
+
+  it("can disable ESPN schedule history imports", () => {
+    expect(historicalRefreshArgs({ ...config(), espnTeamSchedulesEnabled: false })).not.toContain(
+      "--espn-team-schedules"
+    );
   });
 });
 
@@ -233,6 +277,9 @@ function config(): HistoricalRefreshConfig {
     sportsDbApiKey: "123",
     marketTotalsEnabled: true,
     marketTotalsMaxPages: 10,
+    espnTeamSchedulesEnabled: true,
+    espnLookbackSeasons: 2,
+    espnRateLimitPerMinute: 120,
     python: "python3",
     root: "/repo",
     artifactDir: "/repo/data/historical",

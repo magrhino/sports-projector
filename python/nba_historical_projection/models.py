@@ -17,6 +17,8 @@ DEFAULT_MAX_SNAPSHOT_AGE_DAYS = 7
 DEFAULT_MIN_PROJECTED_TOTAL = 150.0
 DEFAULT_MAX_PROJECTED_TOTAL = 280.0
 DEFAULT_MAX_MARKET_TOTAL_DIFFERENCE = 35.0
+DEFAULT_MAX_HEALTH_TOTAL_RMSE = 45.0
+DEFAULT_MAX_HEALTH_MARGIN_RMSE = 30.0
 
 
 class Predictor(Protocol):
@@ -69,6 +71,54 @@ class XGBoostJsonPredictor:
         return float(prediction[0])
 
 
+class EnsembleJsonPredictor:
+    def __init__(self, config: dict[str, Any], model_path: Path):
+        data = load_json(model_path)
+        if not isinstance(data, dict):
+            raise ArtifactError(f"Ensemble model must contain a JSON object: {model_path}")
+        components = data.get("components")
+        if not isinstance(components, list) or not components:
+            raise ArtifactError(f"Ensemble model must define components: {model_path}")
+        self.components = components
+        clip = data.get("clip")
+        self.clip = clip if isinstance(clip, dict) else {}
+
+    def predict(self, features: list[float], feature_columns: list[str]) -> float:
+        feature_values = dict(zip(feature_columns, features))
+        prediction = 0.0
+        for component in self.components:
+            if not isinstance(component, dict):
+                continue
+            weight = float(component.get("weight", 0.0))
+            component_type = component.get("type")
+            if component_type == "feature":
+                feature = component.get("feature")
+                if not isinstance(feature, str):
+                    raise ArtifactError("Ensemble feature component must define feature")
+                prediction += weight * float(feature_values.get(feature, 0.0))
+            elif component_type == "linear":
+                prediction += weight * linear_component_prediction(component, feature_values)
+            else:
+                raise ArtifactError(f"Unsupported ensemble component type: {component_type}")
+        minimum = numeric_or_none(self.clip.get("min")) if self.clip else None
+        maximum = numeric_or_none(self.clip.get("max")) if self.clip else None
+        if minimum is not None:
+            prediction = max(minimum, prediction)
+        if maximum is not None:
+            prediction = min(maximum, prediction)
+        return prediction
+
+
+def linear_component_prediction(component: dict[str, Any], feature_values: dict[str, float]) -> float:
+    coefficients = component.get("coefficients")
+    if not isinstance(coefficients, dict):
+        raise ArtifactError("Ensemble linear component coefficients must be an object")
+    return float(component.get("intercept", 0.0)) + sum(
+        float(weight) * float(feature_values.get(column, 0.0))
+        for column, weight in coefficients.items()
+    )
+
+
 def load_predictor(root: Path, config: dict[str, Any]) -> Predictor:
     model_path = artifact_path(root, config["path"])
     model_type = config["type"]
@@ -76,6 +126,8 @@ def load_predictor(root: Path, config: dict[str, Any]) -> Predictor:
         return LinearJsonPredictor(config, model_path)
     if model_type == "xgboost_json":
         return XGBoostJsonPredictor(config, model_path)
+    if model_type == "ensemble_json":
+        return EnsembleJsonPredictor(config, model_path)
     raise ArtifactError(f"Unsupported model type: {model_type}")
 
 
@@ -93,6 +145,7 @@ def derive_team_scores(projected_total: float, projected_home_margin: float) -> 
 def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) -> dict[str, Any]:
     root = Path(artifact_dir)
     manifest = validate_manifest(root)
+    validate_prediction_model_health(manifest)
     request_market_total = numeric_or_none(request.get("market_total"))
     market_context = market_total_context(root, manifest, request, request_market_total)
     prediction_request = (
@@ -116,9 +169,25 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
 
     validate_projected_total(manifest, projected_total, prediction_request)
     market_total_used = numeric_or_none(prediction_request.get("market_total"))
-    data_quality = data_quality_for_prediction(market_total_used)
+    selected_scores = derive_team_scores(projected_total, projected_home_margin)
+    independent_projection = projection_summary(
+        "independent",
+        selected_scores,
+        "Historical model projection without live in-game state.",
+    )
+    market_aware_projection = market_aware_projection_for_prediction(
+        independent_projection,
+        market_total_used,
+        uses_market_residual_model(models),
+    )
+    selected_projection = (
+        market_aware_projection
+        if market_aware_projection and uses_market_residual_model(models)
+        else independent_projection
+    )
+    data_quality = data_quality_for_prediction(market_total_used, manifest)
     result = {
-        **derive_team_scores(projected_total, projected_home_margin),
+        **selected_scores,
         "teams": {
             "home": prediction_request["home_team"],
             "away": prediction_request["away_team"],
@@ -146,6 +215,12 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
                 },
             },
         },
+        "independent_projection": independent_projection,
+        "selected_projection": selected_projection,
+        "model_health": model_health_summary(manifest),
+        "diagnostics": {
+            "top_features": top_feature_diagnostics(models, feature_values),
+        },
         "data_quality": data_quality,
         "caveats": [
             "Informational projection only.",
@@ -157,6 +232,8 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     market_comparison = market_comparison_for_request(prediction_request, result)
     if market_comparison:
         result["market_comparison"] = market_comparison
+    if market_aware_projection:
+        result["market_aware_projection"] = market_aware_projection
 
     quantile_output = quantile_output_for_prediction(manifest, projected_total, projected_home_margin)
     if quantile_output:
@@ -165,6 +242,8 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
     probabilities = probabilities_for_prediction(manifest, models, result, prediction_request)
     if probabilities:
         result["probabilities"] = probabilities
+        if "prob_home_win" in probabilities:
+            result["prob_home_win"] = probabilities["prob_home_win"]
 
     edge_status = edge_status_for_prediction(result, prediction_request)
     if edge_status:
@@ -182,6 +261,43 @@ def predict_from_artifacts(artifact_dir: str | Path, request: dict[str, Any]) ->
         }
 
     return result
+
+
+def projection_summary(kind: str, scores: dict[str, float], note: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "projected_home_score": scores["projected_home_score"],
+        "projected_away_score": scores["projected_away_score"],
+        "projected_total": scores["projected_total"],
+        "projected_home_margin": scores["projected_home_margin"],
+        "note": note,
+    }
+
+
+def market_aware_projection_for_prediction(
+    independent_projection: dict[str, Any],
+    market_total: float | None,
+    market_residual_model: bool,
+) -> dict[str, Any] | None:
+    if market_total is None:
+        return None
+    independent_total = float(independent_projection["projected_total"])
+    blend_weight = 0.50 if market_residual_model else 0.25
+    total = (1.0 - blend_weight) * independent_total + blend_weight * market_total
+    margin = float(independent_projection["projected_home_margin"])
+    scores = derive_team_scores(total, margin)
+    return projection_summary(
+        "market_aware",
+        scores,
+        "Blends independent historical projection with supplied market context; this is not live in-game state.",
+    )
+
+
+def uses_market_residual_model(models: dict[str, Any]) -> bool:
+    return any(
+        isinstance(config, dict) and config.get("target_mode") == "market_residual"
+        for config in models.values()
+    )
 
 
 def market_total_context(
@@ -366,16 +482,111 @@ def validate_projected_total(
         )
 
 
-def data_quality_for_prediction(market_total: float | None) -> dict[str, Any]:
+def data_quality_for_prediction(market_total: float | None, manifest: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    if market_total is None:
+        reasons.append("market_total was not supplied; projection is not anchored to the current total market.")
+    if not manifest_has_market_training_rows(manifest):
+        reasons.append("artifact has insufficient historical market rows; market-aware output is diagnostic only.")
     if market_total is None:
         return {
             "status": "missing_market_context",
-            "reasons": ["market_total was not supplied; projection is not anchored to the current total market."],
+            "reasons": reasons,
         }
     return {
         "status": "ok",
-        "reasons": [],
+        "reasons": reasons,
     }
+
+
+def manifest_has_market_training_rows(manifest: dict[str, Any]) -> bool:
+    data_sources = manifest.get("data_sources")
+    if isinstance(data_sources, dict):
+        market_lines = data_sources.get("market_lines")
+        if isinstance(market_lines, dict):
+            matched_rows = numeric_or_none(market_lines.get("matched_rows"))
+            return matched_rows is not None and matched_rows >= 50
+    return any(
+        isinstance(config, dict) and config.get("target_mode") == "market_residual"
+        for config in manifest.get("models", {}).values()
+    )
+
+
+def validate_prediction_model_health(manifest: dict[str, Any]) -> None:
+    health = manifest.get("model_health")
+    if isinstance(health, dict) and health.get("status") == "failed":
+        raise ArtifactError(
+            "Historical artifact failed model health gates; refresh or rebuild artifacts before projecting.",
+            code="invalid_model_health",
+            details={"model_health": health},
+        )
+    if isinstance(health, dict):
+        return
+
+    models = manifest.get("models", {})
+    total_rmse = model_metric(models, "total_score", "validation_rmse")
+    margin_rmse = model_metric(models, "home_margin", "validation_rmse")
+    max_total_rmse = prediction_guard_number(manifest, "max_health_total_rmse", DEFAULT_MAX_HEALTH_TOTAL_RMSE)
+    max_margin_rmse = prediction_guard_number(manifest, "max_health_margin_rmse", DEFAULT_MAX_HEALTH_MARGIN_RMSE)
+    issues: list[str] = []
+    if total_rmse is not None and total_rmse > max_total_rmse:
+        issues.append(f"total_score validation_rmse {round(total_rmse, 2)} exceeds {round(max_total_rmse, 2)}")
+    if margin_rmse is not None and margin_rmse > max_margin_rmse:
+        issues.append(f"home_margin validation_rmse {round(margin_rmse, 2)} exceeds {round(max_margin_rmse, 2)}")
+    if issues:
+        raise ArtifactError(
+            "Historical artifact failed model health gates: " + "; ".join(issues),
+            code="invalid_model_health",
+            details={
+                "issues": issues,
+                "total_score_validation_rmse": total_rmse,
+                "home_margin_validation_rmse": margin_rmse,
+            },
+        )
+
+
+def model_metric(models: Any, model_key: str, metric_key: str) -> float | None:
+    if not isinstance(models, dict):
+        return None
+    config = models.get(model_key)
+    if not isinstance(config, dict):
+        return None
+    return numeric_or_none(config.get(metric_key))
+
+
+def model_health_summary(manifest: dict[str, Any]) -> dict[str, Any]:
+    health = manifest.get("model_health")
+    if isinstance(health, dict):
+        return health
+    return {
+        "status": "unknown",
+        "training_row_count": manifest.get("training_row_count"),
+        "feature_count": len(manifest.get("feature_columns", [])),
+    }
+
+
+def top_feature_diagnostics(models: dict[str, Any], feature_values: dict[str, float], limit: int = 8) -> list[dict[str, Any]]:
+    contributions: dict[str, float] = {}
+    for model_key in ("total_score", "home_margin"):
+        config = models.get(model_key)
+        if not isinstance(config, dict):
+            continue
+        model_type = config.get("type")
+        if model_type != "ensemble_json":
+            continue
+        # Contribution details are read from model artifacts only for debug paths elsewhere.
+        # Keep the public diagnostic bounded to known baseline features from the manifest.
+    for feature in ("BASELINE_TOTAL", "BASELINE_HOME_MARGIN", "SKILL_TOTAL_PRIOR", "SKILL_MARGIN_PRIOR", "ELO_DELTA"):
+        if feature in feature_values:
+            contributions[feature] = float(feature_values[feature])
+    ordered = sorted(contributions.items(), key=lambda item: abs(item[1]), reverse=True)[:limit]
+    return [
+        {
+            "feature": feature,
+            "value": round(value, 6),
+        }
+        for feature, value in ordered
+    ]
 
 
 def prediction_guard_number(manifest: dict[str, Any], key: str, default: float) -> float:

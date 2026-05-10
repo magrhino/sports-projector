@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import {
   historicalProjectionConfigFromEnv,
@@ -18,6 +18,9 @@ export interface HistoricalRefreshConfig extends HistoricalProjectionConfig {
   sportsDbApiKey: string;
   marketTotalsEnabled: boolean;
   marketTotalsMaxPages: number;
+  espnTeamSchedulesEnabled: boolean;
+  espnLookbackSeasons: number;
+  espnRateLimitPerMinute: number;
   historicalEnhancementsEnabled?: boolean;
 }
 
@@ -31,6 +34,9 @@ export interface HistoricalRefreshStatus {
   event_ids: string[];
   market_totals_enabled: boolean;
   market_totals_max_pages: number;
+  espn_team_schedules_enabled: boolean;
+  espn_lookback_seasons: number;
+  espn_rate_limit_per_minute: number;
   artifact_dir: string;
   latest_snapshot_date?: string | null;
   artifact_date_range?: {
@@ -119,6 +125,9 @@ export class HistoricalRefreshScheduler {
       event_ids: this.config.eventIds,
       market_totals_enabled: this.config.marketTotalsEnabled,
       market_totals_max_pages: this.config.marketTotalsMaxPages,
+      espn_team_schedules_enabled: this.config.espnTeamSchedulesEnabled,
+      espn_lookback_seasons: this.config.espnLookbackSeasons,
+      espn_rate_limit_per_minute: this.config.espnRateLimitPerMinute,
       artifact_dir: this.config.artifactDir,
       latest_snapshot_date: artifactSummary.latestSnapshotDate,
       artifact_date_range: artifactSummary.dateRange,
@@ -190,7 +199,18 @@ export function historicalRefreshConfigFromEnv(env: NodeJS.ProcessEnv = process.
     eventIds: splitCsv(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_EVENT_IDS),
     sportsDbApiKey: env.SPORTS_PROJECTOR_SPORTSDB_API_KEY ?? "123",
     marketTotalsEnabled: parseBoolean(env.SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_ENABLED, true),
-    marketTotalsMaxPages: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES, 10, 0, 100)
+    marketTotalsMaxPages: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_MARKET_TOTALS_MAX_PAGES, 10, 0, 100),
+    espnTeamSchedulesEnabled: parseBoolean(
+      env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_ESPN_TEAM_SCHEDULES_ENABLED,
+      true
+    ),
+    espnLookbackSeasons: clampInteger(env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_ESPN_LOOKBACK_SEASONS, 2, 1, 10),
+    espnRateLimitPerMinute: clampInteger(
+      env.SPORTS_PROJECTOR_HISTORICAL_REFRESH_ESPN_RATE_LIMIT_PER_MINUTE,
+      120,
+      1,
+      600
+    )
   };
 }
 
@@ -202,7 +222,8 @@ export async function runHistoricalRefreshCommand(
     ...process.env,
     PYTHONPATH: process.env.PYTHONPATH ? `${pythonPath}${path.delimiter}${process.env.PYTHONPATH}` : pythonPath
   };
-  const args = historicalRefreshArgs(config);
+  const stagingDir = createHistoricalStagingDir(config.artifactDir);
+  const args = historicalRefreshArgs({ ...config, artifactDir: stagingDir });
 
   return await new Promise<HistoricalCommandResult>((resolve, reject) => {
     execFile(
@@ -216,16 +237,70 @@ export async function runHistoricalRefreshCommand(
       },
       (error, stdout, stderr) => {
         if (error) {
+          rmSync(stagingDir, { recursive: true, force: true });
           const message = error.killed
             ? `timed out after ${config.timeoutMs}ms`
             : error.message;
           reject(new Error(`Historical refresh command failed: ${message}${stderr ? `: ${stderr}` : ""}`));
           return;
         }
-        resolve({ stdout, stderr });
+        try {
+          promoteHistoricalStagingDir(stagingDir, config.artifactDir);
+          resolve({ stdout: promotedRefreshStdout(stdout, stagingDir, config.artifactDir), stderr });
+        } catch (promoteError) {
+          rmSync(stagingDir, { recursive: true, force: true });
+          const message = promoteError instanceof Error ? promoteError.message : String(promoteError);
+          reject(new Error(`Historical refresh artifact promotion failed: ${message}`));
+        }
       }
     );
   });
+}
+
+function createHistoricalStagingDir(artifactDir: string): string {
+  const parent = path.dirname(artifactDir);
+  mkdirSync(parent, { recursive: true });
+  return mkdtempSync(path.join(parent, ".historical-refresh-"));
+}
+
+export function promoteHistoricalStagingDir(stagingDir: string, artifactDir: string): void {
+  const backupDir = `${artifactDir}.previous-${Date.now()}`;
+  let backedUp = false;
+  try {
+    if (existsSync(artifactDir)) {
+      renameSync(artifactDir, backupDir);
+      backedUp = true;
+    }
+    renameSync(stagingDir, artifactDir);
+    if (backedUp) {
+      rmSync(backupDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (existsSync(artifactDir)) {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+    if (backedUp && existsSync(backupDir)) {
+      renameSync(backupDir, artifactDir);
+    }
+    throw error;
+  }
+}
+
+function promotedRefreshStdout(stdout: string, stagingDir: string, artifactDir: string): string {
+  try {
+    const parsed = JSON.parse(stdout) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return stdout;
+    }
+    return JSON.stringify({
+      ...(parsed as Record<string, unknown>),
+      artifact_dir: artifactDir,
+      staged_artifact_dir: path.basename(stagingDir),
+      promoted: true
+    });
+  } catch {
+    return stdout;
+  }
 }
 
 export function historicalRefreshArgs(config: HistoricalRefreshConfig): string[] {
@@ -257,6 +332,16 @@ export function historicalRefreshArgs(config: HistoricalRefreshConfig): string[]
       "--skill-features",
       "score-based",
       "--experimental-market-decorrelation"
+    );
+  }
+  args.push("--enforce-quality-gates");
+  if (config.espnTeamSchedulesEnabled) {
+    args.push(
+      "--espn-team-schedules",
+      "--espn-lookback-seasons",
+      String(config.espnLookbackSeasons),
+      "--espn-rate-limit-per-minute",
+      String(config.espnRateLimitPerMinute)
     );
   }
   if (config.marketTotalsEnabled) {

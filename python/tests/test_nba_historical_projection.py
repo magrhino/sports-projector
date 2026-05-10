@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 
@@ -29,6 +29,7 @@ from nba_historical_projection.features import build_feature_vector
 from nba_historical_projection.models import derive_team_scores, predict_from_artifacts
 from nba_historical_projection.providers.sportsdb import (
     DEFAULT_SPORTSDB_API_KEY,
+    SportsDbError,
     SportsDbRateLimiter,
     build_sportsdb_url,
 )
@@ -40,6 +41,8 @@ from nba_historical_projection.sportsdb_import import (
     import_sportsdb_artifacts,
     load_availability_csv,
     load_market_lines_csv,
+    load_team_game_log_csv,
+    parse_espn_schedule_games,
     parse_games,
     recent_nba_seasons,
     select_seasons,
@@ -525,6 +528,93 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(result["projected_total_quantiles"], {"0.10": 212.0, "0.50": 220.0, "0.90": 228.0})
             self.assertEqual(result["median_home_margin"], 4.0)
 
+    def test_baseline_ensemble_keeps_spurs_wolves_projection_plausible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "models").mkdir()
+            self.write_json(
+                root / "models" / "total.json",
+                {
+                    "components": [
+                        {"name": "baseline", "type": "feature", "feature": "BASELINE_TOTAL", "weight": 1.0}
+                    ],
+                    "clip": {"min": 150, "max": 280},
+                },
+            )
+            self.write_json(
+                root / "models" / "margin.json",
+                {
+                    "components": [
+                        {"name": "baseline", "type": "feature", "feature": "BASELINE_HOME_MARGIN", "weight": 1.0}
+                    ],
+                    "clip": {"min": -45, "max": 45},
+                },
+            )
+            with sqlite3.connect(root / "team_stats.sqlite") as connection:
+                write_sqlite_rows(
+                    connection,
+                    "2026-05-10",
+                    [
+                        {
+                            "TEAM_NAME": "Minnesota Timberwolves",
+                            "SEASON_AVG_POINTS_FOR": 112,
+                            "SEASON_AVG_POINTS_AGAINST": 115,
+                            "ROLLING10_AVG_POINTS_FOR": 110,
+                            "ROLLING10_AVG_POINTS_AGAINST": 116,
+                            "ROLLING3_AVG_POINTS_FOR": 108,
+                            "ROLLING3_AVG_POINTS_AGAINST": 118,
+                            "HOME_AVG_POINTS_FOR": 112,
+                            "HOME_AVG_POINTS_AGAINST": 115,
+                            "DAYS_REST": 2,
+                            "ELO": 1490,
+                            "OFF_SKILL_MEAN": 112,
+                            "DEF_SKILL_MEAN": 115,
+                        },
+                        {
+                            "TEAM_NAME": "San Antonio Spurs",
+                            "SEASON_AVG_POINTS_FOR": 120,
+                            "SEASON_AVG_POINTS_AGAINST": 108,
+                            "ROLLING10_AVG_POINTS_FOR": 120,
+                            "ROLLING10_AVG_POINTS_AGAINST": 106,
+                            "ROLLING3_AVG_POINTS_FOR": 122,
+                            "ROLLING3_AVG_POINTS_AGAINST": 104,
+                            "AWAY_AVG_POINTS_FOR": 115,
+                            "AWAY_AVG_POINTS_AGAINST": 110,
+                            "DAYS_REST": 2,
+                            "ELO": 1510,
+                            "OFF_SKILL_MEAN": 118,
+                            "DEF_SKILL_MEAN": 108,
+                        },
+                    ],
+                )
+            self.write_json(
+                root / "manifest.json",
+                {
+                    "feature_columns": ["BASELINE_TOTAL", "BASELINE_HOME_MARGIN"],
+                    "feature_defaults": {"BASELINE_TOTAL": 224, "BASELINE_HOME_MARGIN": 0},
+                    "team_stats": {"type": "sqlite", "path": "team_stats.sqlite"},
+                    "model_health": {"status": "ok", "issues": [], "warnings": []},
+                    "models": {
+                        "total_score": {"type": "ensemble_json", "path": "models/total.json", "target_mode": "direct"},
+                        "home_margin": {"type": "ensemble_json", "path": "models/margin.json", "target_mode": "direct"},
+                    },
+                },
+            )
+
+            projection = predict_from_artifacts(
+                root,
+                {
+                    "home_team": "Minnesota Timberwolves",
+                    "away_team": "San Antonio Spurs",
+                    "game_date": "2026-05-10",
+                },
+            )
+
+            self.assertGreater(projection["projected_total"], 200)
+            self.assertLess(projection["projected_total"], 250)
+            self.assertGreater(projection["projected_away_score"], 95)
+            self.assertLess(abs(projection["projected_home_margin"]), 20)
+
     def test_calibration_bins_are_reproducible_and_probabilities_monotonic(self):
         residuals = [-4, -2, 0, 2, 4]
         low = empirical_probability(-3, residuals)
@@ -718,6 +808,65 @@ class HistoricalProjectionTests(unittest.TestCase):
         self.assertTrue(games[0].is_final)
         self.assertFalse(games[1].is_final)
 
+    def test_sportsdb_parser_does_not_treat_live_scores_as_final(self):
+        games = parse_games(
+            {
+                "events": [
+                    {
+                        "idEvent": "1",
+                        "strSeason": "2025-2026",
+                        "dateEvent": "2026-05-10",
+                        "strHomeTeam": "Philadelphia 76ers",
+                        "strAwayTeam": "New York Knicks",
+                        "intHomeScore": "2",
+                        "intAwayScore": "5",
+                        "strStatus": "Q1",
+                    },
+                    {
+                        "idEvent": "2",
+                        "strSeason": "2025-2026",
+                        "dateEvent": "2026-05-10",
+                        "strHomeTeam": "Los Angeles Lakers",
+                        "strAwayTeam": "Oklahoma City Thunder",
+                        "intHomeScore": "108",
+                        "intAwayScore": "131",
+                        "strStatus": "FT",
+                    },
+                ]
+            },
+            fallback_season="2025-2026",
+        )
+
+        self.assertFalse(games[0].is_final)
+        self.assertTrue(games[1].is_final)
+
+    def test_live_games_do_not_create_training_rows_or_update_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_path = root / "games.sqlite"
+            team_stats_path = root / "team_stats.sqlite"
+            build_training_and_snapshots(
+                [
+                    SportsDbGame("1", "2025-2026", "2026-05-10", "Philadelphia 76ers", "New York Knicks", 2, 5, "Q1"),
+                    SportsDbGame("2", "2025-2026", "2026-05-11", "Philadelphia 76ers", "New York Knicks", 102, 99, "FT"),
+                ],
+                ["Philadelphia 76ers", "New York Knicks"],
+                dataset_path,
+                team_stats_path,
+            )
+
+            with sqlite3.connect(dataset_path) as connection:
+                row_count = connection.execute(f'SELECT COUNT(*) FROM "{TRAINING_TABLE}"').fetchone()[0]
+            with sqlite3.connect(team_stats_path) as connection:
+                connection.row_factory = sqlite3.Row
+                snapshot = connection.execute(
+                    'SELECT * FROM "2026-05-11" WHERE "TEAM_NAME" = ?',
+                    ("Philadelphia 76ers",),
+                ).fetchone()
+
+            self.assertEqual(row_count, 1)
+            self.assertEqual(snapshot["PRIOR_GAMES"], 0.0)
+
     def test_market_and_availability_csv_parsers_match_normalized_teams(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -744,6 +893,20 @@ class HistoricalProjectionTests(unittest.TestCase):
             self.assertEqual(market_line.opening_spread, 3.5)
             self.assertEqual(len(availability), 1)
             self.assertEqual(next(iter(availability.values())).unavailable_minutes, 40.0)
+
+    def test_team_game_log_csv_parser_reads_boxscore_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "team_game_logs.csv"
+            path.write_text(
+                "date,team,FG,FGA,3P,TRB,TOV\n"
+                "2026-05-10,Minnesota Timberwolves,42,88,14,46,11\n",
+                encoding="utf-8",
+            )
+
+            logs = load_team_game_log_csv(path)
+
+            self.assertEqual(logs[("2026-05-10", "minnesota timberwolves")]["FG"], 42.0)
+            self.assertEqual(logs[("2026-05-10", "minnesota timberwolves")]["TRB"], 46.0)
 
     def test_sportsdb_import_writes_manifest_models_and_local_snapshots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -782,6 +945,73 @@ class HistoricalProjectionTests(unittest.TestCase):
             )
             self.assertIn("projected_total", projection)
             self.assertEqual(projection["artifact"]["source"]["type"], "sportsdb_v1")
+            self.assertIn("independent_projection", projection)
+            self.assertIn("selected_projection", projection)
+            self.assertIn("model_health", projection)
+            self.assertIn("top_features", projection["diagnostics"])
+
+    def test_espn_schedule_parser_ignores_live_scored_games_as_final(self):
+        games = parse_espn_schedule_games(
+            {
+                "events": [
+                    FakeEspnScheduleClient.espn_event(
+                        "401",
+                        "2026-05-10T23:30:00Z",
+                        "Minnesota Timberwolves",
+                        "San Antonio Spurs",
+                        61,
+                        58,
+                        completed=False,
+                        status="In Progress",
+                    ),
+                    FakeEspnScheduleClient.espn_event(
+                        "402",
+                        "2026-05-11T23:30:00Z",
+                        "Boston Celtics",
+                        "New York Knicks",
+                        114,
+                        107,
+                    ),
+                ]
+            },
+            fallback_season="2025-2026",
+        )
+
+        self.assertEqual(len(games), 2)
+        self.assertFalse(games[0].is_final)
+        self.assertTrue(games[1].is_final)
+
+    def test_sportsdb_import_uses_espn_team_schedules_for_gate_sized_training(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                espn_team_schedules=True,
+                espn_client=FakeEspnScheduleClient(game_count=320),
+                espn_lookback_seasons=1,
+                enforce_quality_gates=True,
+                include_team_last_events=False,
+                validation_splits=2,
+            )
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(result["final_games"], 300)
+            self.assertEqual(result["espn_team_schedules"]["event_count"], 320)
+            self.assertEqual(result["espn_team_schedules"]["completed_events"], 320)
+            self.assertEqual(manifest["data_sources"]["espn_team_schedules"]["event_count"], 320)
+            self.assertEqual(manifest["source"]["espn_team_schedules"], True)
+
+    def test_sportsdb_import_quality_gates_refuse_tiny_training_sets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(SportsDbError, "failed quality gates"):
+                import_sportsdb_artifacts(
+                    artifact_dir=Path(tmpdir),
+                    seasons=["2025-2026"],
+                    client=FakeSportsDbClient(),
+                    enforce_quality_gates=True,
+                )
 
     def test_sportsdb_import_enriches_market_lines_and_availability(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1357,6 +1587,99 @@ class FakeSportsDbClient:
     def assert_nba_league(self, league_id: str):
         if league_id != "4387":
             raise AssertionError(f"unexpected league id: {league_id}")
+
+
+class FakeEspnScheduleClient:
+    def __init__(self, game_count=4):
+        self.game_count = game_count
+
+    def fetch_teams(self):
+        return {
+            "sports": [
+                {
+                    "leagues": [
+                        {
+                            "teams": [
+                                {"team": {"id": "1", "displayName": "Boston Celtics"}},
+                                {"team": {"id": "2", "displayName": "New York Knicks"}},
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
+    def fetch_team_schedule(self, team_id: str, season_year: int):
+        if team_id not in {"1", "2"}:
+            raise AssertionError(f"unexpected ESPN team id: {team_id}")
+        if season_year != 2026:
+            raise AssertionError(f"unexpected ESPN season year: {season_year}")
+        return {
+            "events": [
+                self.espn_event(
+                    str(5000 + index),
+                    f"{(date(2025, 10, 1) + timedelta(days=index)).isoformat()}T23:30:00Z",
+                    "Boston Celtics" if index % 2 == 0 else "New York Knicks",
+                    "New York Knicks" if index % 2 == 0 else "Boston Celtics",
+                    111 + (index % 7),
+                    105 + (index % 5),
+                )
+                for index in range(self.game_count)
+            ]
+        }
+
+    @staticmethod
+    def espn_event(
+        event_id,
+        event_date,
+        home,
+        away,
+        home_score,
+        away_score,
+        completed=True,
+        status="Final",
+    ):
+        return {
+            "id": event_id,
+            "date": event_date,
+            "competitions": [
+                {
+                    "id": event_id,
+                    "date": event_date,
+                    "status": {
+                        "type": {
+                            "state": "post" if completed else "in",
+                            "description": status,
+                            "completed": completed,
+                        }
+                    },
+                    "competitors": [
+                        {
+                            "homeAway": "home",
+                            "score": {
+                                "displayValue": str(home_score),
+                                "value": float(home_score),
+                            },
+                            "team": {
+                                "displayName": home,
+                                "abbreviation": "".join(part[0] for part in home.split()),
+                            },
+                        },
+                        {
+                            "homeAway": "away",
+                            "score": {
+                                "displayValue": str(away_score),
+                                "value": float(away_score),
+                            },
+                            "team": {
+                                "displayName": away,
+                                "abbreviation": "".join(part[0] for part in away.split()),
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
 
 
 class FakeKalshiClient:

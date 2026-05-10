@@ -85,6 +85,14 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--auto-market-lines", action="store_true")
     sportsdb_parser.add_argument("--market-lines-max-pages", type=int, default=10)
     sportsdb_parser.add_argument("--availability-csv")
+    sportsdb_parser.add_argument("--team-game-log-csv")
+    sportsdb_parser.add_argument(
+        "--espn-team-schedules",
+        action="store_true",
+        help="Supplement SportsDB with public ESPN team schedule fetches for completed-game training history.",
+    )
+    sportsdb_parser.add_argument("--espn-lookback-seasons", type=int, default=2)
+    sportsdb_parser.add_argument("--espn-rate-limit-per-minute", type=int, default=120)
     sportsdb_parser.add_argument("--model-kind", choices=["direct", "market-residual", "auto"], default="auto")
     sportsdb_parser.add_argument("--validation-splits", type=int, default=3)
     sportsdb_parser.add_argument("--calibration", choices=["none", "empirical", "isotonic", "platt", "auto"], default="auto")
@@ -93,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     sportsdb_parser.add_argument("--rating-line-source", choices=["open", "close", "provided"], default="close")
     sportsdb_parser.add_argument("--skill-features", choices=["none", "score-based"], default="none")
     sportsdb_parser.add_argument("--experimental-market-decorrelation", action="store_true")
+    sportsdb_parser.add_argument(
+        "--enforce-quality-gates",
+        action="store_true",
+        help="Fail the import when model health gates do not pass.",
+    )
     sportsdb_parser.add_argument("--recent-days", type=int, default=3)
     sportsdb_parser.add_argument("--lookahead-days", type=int, default=2)
     sportsdb_parser.add_argument("--event-id", action="append", default=[])
@@ -198,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
                 auto_market_lines=args.auto_market_lines,
                 market_lines_max_pages=args.market_lines_max_pages,
                 availability_csv=args.availability_csv,
+                team_game_log_csv=args.team_game_log_csv,
+                espn_team_schedules=args.espn_team_schedules,
+                espn_lookback_seasons=args.espn_lookback_seasons,
+                espn_rate_limit_per_minute=args.espn_rate_limit_per_minute,
                 model_kind=args.model_kind,
                 validation_splits=args.validation_splits,
                 calibration=args.calibration,
@@ -210,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
                 lookahead_days=args.lookahead_days,
                 event_ids=args.event_id,
                 include_team_last_events=not args.no_team_last_events,
+                enforce_quality_gates=args.enforce_quality_gates,
             )
             write_json(result)
             return 0

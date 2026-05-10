@@ -127,6 +127,9 @@ export type HistoricalRefreshStatusPayload = {
   event_ids?: string[];
   market_totals_enabled?: boolean;
   market_totals_max_pages?: number;
+  espn_team_schedules_enabled?: boolean;
+  espn_lookback_seasons?: number;
+  espn_rate_limit_per_minute?: number;
   artifact_dir?: string;
   latest_snapshot_date?: string | null;
   artifact_date_range?: {

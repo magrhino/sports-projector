@@ -4,6 +4,9 @@ import csv
 import json
 import math
 import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -44,6 +47,7 @@ from .providers.sportsdb import (
     SPORT_CONFIGS,
     SportsDbClient,
     SportsDbError,
+    SportsDbRateLimiter,
     write_raw_json,
 )
 from .providers.kalshi import (
@@ -54,10 +58,103 @@ from .providers.kalshi import (
 
 
 TRAINING_TABLE = "sportsdb_nba_training"
+ESPN_SITE_ORIGIN = "https://site.api.espn.com"
+DEFAULT_ESPN_RATE_LIMIT_PER_MINUTE = 120
+DEFAULT_ESPN_SCHEDULE_LOOKBACK_SEASONS = 2
 DEFAULT_FIRST_GAME_REST_DAYS = 7.0
 BASE_ELO = 1500.0
 ELO_K = 20.0
 NBA_GAME_TIMEZONE = ZoneInfo("America/New_York")
+FINAL_GAME_STATUSES = {
+    "ft",
+    "final",
+    "finished",
+    "match finished",
+    "after overtime",
+    "aet",
+}
+MIN_MARKET_RESIDUAL_ROWS = 50
+BASELINE_TOTAL_FEATURE = "BASELINE_TOTAL"
+BASELINE_HOME_MARGIN_FEATURE = "BASELINE_HOME_MARGIN"
+BASELINE_FEATURE_COLUMNS = [BASELINE_TOTAL_FEATURE, BASELINE_HOME_MARGIN_FEATURE]
+STABLE_FEATURE_CANDIDATES = [
+    BASELINE_TOTAL_FEATURE,
+    BASELINE_HOME_MARGIN_FEATURE,
+    "PRIOR_GAMES",
+    "PRIOR_GAMES.1",
+    "SEASON_WIN_PCT",
+    "SEASON_WIN_PCT.1",
+    "SEASON_AVG_POINTS_FOR",
+    "SEASON_AVG_POINTS_FOR.1",
+    "SEASON_AVG_POINTS_AGAINST",
+    "SEASON_AVG_POINTS_AGAINST.1",
+    "SEASON_AVG_MARGIN",
+    "SEASON_AVG_MARGIN.1",
+    "ROLLING3_AVG_POINTS_FOR",
+    "ROLLING3_AVG_POINTS_FOR.1",
+    "ROLLING3_AVG_POINTS_AGAINST",
+    "ROLLING3_AVG_POINTS_AGAINST.1",
+    "ROLLING3_AVG_MARGIN",
+    "ROLLING3_AVG_MARGIN.1",
+    "ROLLING10_AVG_POINTS_FOR",
+    "ROLLING10_AVG_POINTS_FOR.1",
+    "ROLLING10_AVG_POINTS_AGAINST",
+    "ROLLING10_AVG_POINTS_AGAINST.1",
+    "ROLLING10_AVG_MARGIN",
+    "ROLLING10_AVG_MARGIN.1",
+    "DAYS_REST",
+    "DAYS_REST.1",
+    "ELO_DELTA",
+    "HOME_BACK_TO_BACK",
+    "AWAY_BACK_TO_BACK",
+    "HOME_MARKET_RATING",
+    "AWAY_MARKET_RATING",
+    "MARKET_RATING_DIFF",
+    "MARKET_TOTAL_TEAM_ENVIRONMENT_PRIOR",
+    "MARKET_SPREAD_PRIOR_RESIDUAL_FORM",
+    "HOME_OFF_SKILL_MEAN",
+    "HOME_DEF_SKILL_MEAN",
+    "AWAY_OFF_SKILL_MEAN",
+    "AWAY_DEF_SKILL_MEAN",
+    "SKILL_MARGIN_PRIOR",
+    "SKILL_TOTAL_PRIOR",
+    "MARKET_TOTAL_CLOSE",
+    "MARKET_SPREAD_CLOSE",
+    "MARKET_TOTAL_MOVE",
+    "MARKET_SPREAD_MOVE",
+    "HOME_UNAVAILABLE_MINUTES",
+    "AWAY_UNAVAILABLE_MINUTES",
+    "HOME_UNAVAILABLE_VALUE",
+    "AWAY_UNAVAILABLE_VALUE",
+]
+BOXSCORE_STATS = [
+    "FG",
+    "FGA",
+    "FGP",
+    "3P",
+    "3PA",
+    "3PP",
+    "2P",
+    "2PA",
+    "2PP",
+    "FT",
+    "FTA",
+    "FTP",
+    "ORB",
+    "DRB",
+    "TRB",
+    "AST",
+    "STL",
+    "BLK",
+    "TOV",
+    "PF",
+]
+BOXSCORE_FEATURE_COLUMNS = [
+    f"{side}_{stat}"
+    for side in ("HOME", "AWAY")
+    for stat in BOXSCORE_STATS
+]
+STABLE_FEATURE_CANDIDATES.extend(BOXSCORE_FEATURE_COLUMNS)
 
 
 class SportsDbImportClient(Protocol):
@@ -80,6 +177,14 @@ class SportsDbImportClient(Protocol):
         ...
 
 
+class EspnScheduleImportClient(Protocol):
+    def fetch_teams(self) -> dict[str, Any]:
+        ...
+
+    def fetch_team_schedule(self, team_id: str, season_year: int) -> dict[str, Any]:
+        ...
+
+
 @dataclass(frozen=True)
 class SportsDbGame:
     event_id: str
@@ -89,10 +194,69 @@ class SportsDbGame:
     away_team: str
     home_score: float | None
     away_score: float | None
+    status: str = ""
 
     @property
     def is_final(self) -> bool:
-        return self.home_score is not None and self.away_score is not None
+        if self.home_score is None or self.away_score is None:
+            return False
+        normalized_status = normalize_status(self.status)
+        return normalized_status == "" or normalized_status in FINAL_GAME_STATUSES
+
+
+@dataclass(frozen=True)
+class EspnScheduleTeam:
+    team_id: str
+    name: str
+
+
+class EspnScheduleClient:
+    def __init__(
+        self,
+        rate_limit_per_minute: int = DEFAULT_ESPN_RATE_LIMIT_PER_MINUTE,
+        opener: Any | None = None,
+        timeout_seconds: float = 30.0,
+        limiter: SportsDbRateLimiter | None = None,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.opener = opener or self._open
+        self.limiter = limiter or SportsDbRateLimiter(rate_limit_per_minute)
+
+    def fetch_teams(self) -> dict[str, Any]:
+        return self.fetch_json(["apis", "site", "v2", "sports", "basketball", "nba", "teams"], {})
+
+    def fetch_team_schedule(self, team_id: str, season_year: int) -> dict[str, Any]:
+        return self.fetch_json(
+            ["apis", "site", "v2", "sports", "basketball", "nba", "teams", team_id, "schedule"],
+            {"season": str(season_year)},
+        )
+
+    def fetch_json(self, path_parts: list[str], query: dict[str, str], max_attempts: int = 3) -> dict[str, Any]:
+        url = build_espn_site_url(path_parts, query)
+        for attempt in range(1, max_attempts + 1):
+            self.limiter.wait()
+            try:
+                with self.opener(url, self.timeout_seconds) as response:
+                    data = response.read().decode("utf-8")
+                parsed = json.loads(data)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < max_attempts:
+                    self.limiter.wait_after_429()
+                    continue
+                raise SportsDbError(f"ESPN request failed with HTTP {exc.code}: {url}") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                raise SportsDbError(f"ESPN request failed: {url}: {exc}") from exc
+            except json.JSONDecodeError as exc:
+                raise SportsDbError(f"ESPN returned invalid JSON: {url}: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise SportsDbError(f"ESPN response must be a JSON object: {url}")
+            return parsed
+        raise SportsDbError(f"ESPN request exhausted retries: {url}")
+
+    @staticmethod
+    def _open(url: str, timeout_seconds: float):
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        return urllib.request.urlopen(request, timeout=timeout_seconds)
 
 
 @dataclass(frozen=True)
@@ -154,6 +318,7 @@ def import_sportsdb_artifacts(
     log_run: bool = True,
     market_lines_csv: str | Path | None = None,
     availability_csv: str | Path | None = None,
+    team_game_log_csv: str | Path | None = None,
     model_kind: str = "auto",
     validation_splits: int = 3,
     recent_days: int = 3,
@@ -171,6 +336,11 @@ def import_sportsdb_artifacts(
     auto_market_lines: bool = False,
     market_lines_max_pages: int = DEFAULT_MARKET_LINES_MAX_PAGES,
     kalshi_client: KalshiMarketClient | None = None,
+    enforce_quality_gates: bool = False,
+    espn_team_schedules: bool = False,
+    espn_lookback_seasons: int = DEFAULT_ESPN_SCHEDULE_LOOKBACK_SEASONS,
+    espn_rate_limit_per_minute: int = DEFAULT_ESPN_RATE_LIMIT_PER_MINUTE,
+    espn_client: EspnScheduleImportClient | None = None,
 ) -> dict[str, Any]:
     if sport not in SPORT_CONFIGS:
         raise SportsDbError(f"Unsupported SportsDB sport: {sport}")
@@ -204,6 +374,10 @@ def import_sportsdb_artifacts(
         raise SportsDbError("recent_days must be at least 0")
     if lookahead_days < 0:
         raise SportsDbError("lookahead_days must be at least 0")
+    if espn_lookback_seasons < 1:
+        raise SportsDbError("espn_lookback_seasons must be at least 1")
+    if espn_rate_limit_per_minute < 1:
+        raise SportsDbError("espn_rate_limit_per_minute must be at least 1")
 
     raw_root = root / "sportsdb" / "raw" / sport
     normalized_root = root / "sportsdb" / "normalized"
@@ -235,6 +409,19 @@ def import_sportsdb_artifacts(
     )
     games.extend(supplemental_summary["games"])
 
+    espn_schedule_summary: dict[str, Any] = {"enabled": espn_team_schedules}
+    if espn_team_schedules:
+        espn_provider_client = espn_client or EspnScheduleClient(rate_limit_per_minute=espn_rate_limit_per_minute)
+        espn_schedule_summary = collect_espn_team_schedule_games(
+            espn_provider_client,
+            raw_root,
+            selected_seasons,
+            lookback_seasons=espn_lookback_seasons,
+        )
+        games.extend(espn_schedule_summary["games"])
+        if espn_schedule_summary["event_count"] == 0:
+            raise SportsDbError("ESPN team schedule import returned no NBA events")
+
     games = dedupe_games(games)
     if not games:
         raise SportsDbError("SportsDB import found no NBA events")
@@ -258,6 +445,7 @@ def import_sportsdb_artifacts(
     if market_lines:
         write_market_lines_sqlite(market_lines_path, market_lines)
     availability = load_availability_csv(availability_csv) if availability_csv else {}
+    team_game_logs = load_team_game_log_csv(team_game_log_csv) if team_game_log_csv else {}
     training_rows, snapshot_dates = build_training_and_snapshots(
         games,
         team_names,
@@ -265,6 +453,7 @@ def import_sportsdb_artifacts(
         team_stats_path,
         market_lines=market_lines,
         availability=availability,
+        team_game_logs=team_game_logs,
         rating_features=rating_features,
         rating_line_source=rating_line_source,
         skill_features=skill_features,
@@ -306,6 +495,17 @@ def import_sportsdb_artifacts(
         parse_quantiles(quantiles) or ([] if quantiles is None else DEFAULT_QUANTILES),
         experimental_market_decorrelation,
     )
+    model_health = build_model_health(
+        training_rows,
+        feature_columns,
+        {
+            "total_score": total_model,
+            "home_margin": margin_model,
+        },
+        enforce_quality_gates=enforce_quality_gates,
+    )
+    if enforce_quality_gates and model_health["status"] == "failed":
+        raise SportsDbError("Historical artifact failed quality gates: " + "; ".join(model_health["issues"]))
     write_model(model_dir / "total_score.json", total_model)
     write_model(model_dir / "home_margin.json", margin_model)
 
@@ -324,6 +524,8 @@ def import_sportsdb_artifacts(
             "lookahead_days": lookahead_days,
             "event_ids": event_ids or [],
             "team_last_events": include_team_last_events,
+            "espn_team_schedules": espn_team_schedules,
+            "espn_lookback_seasons": espn_lookback_seasons,
         },
         "data_sources": {
             "market_lines": market_line_source_summary(
@@ -334,6 +536,8 @@ def import_sportsdb_artifacts(
                 len(market_lines),
             ),
             "availability": data_source_summary(availability_csv, len(availability)),
+            "team_game_logs": data_source_summary(team_game_log_csv, len(team_game_logs)),
+            "espn_team_schedules": espn_schedule_data_source_summary(espn_schedule_summary),
         },
         "market_lines": (
             {
@@ -346,6 +550,8 @@ def import_sportsdb_artifacts(
         ),
         "seasons": selected_seasons,
         "feature_columns": feature_columns,
+        "training_row_count": len(training_rows),
+        "feature_count": len(feature_columns),
         "feature_defaults": feature_defaults,
         "feature_generators": {
             "rating_features": rating_features,
@@ -358,15 +564,17 @@ def import_sportsdb_artifacts(
         },
         "models": {
             "total_score": {
-                "type": "linear_json",
+                "type": model_artifact_type(total_model),
                 "path": "models/total_score.json",
                 "target_mode": total_mode,
+                "ensemble_weights": total_model.get("ensemble_weights"),
                 **total_model["metrics"],
             },
             "home_margin": {
-                "type": "linear_json",
+                "type": model_artifact_type(margin_model),
                 "path": "models/home_margin.json",
                 "target_mode": margin_mode,
+                "ensemble_weights": margin_model.get("ensemble_weights"),
                 **margin_model["metrics"],
             },
         },
@@ -381,6 +589,7 @@ def import_sportsdb_artifacts(
             "enabled": skill_features == "score-based",
             "columns": [column for column in SKILL_FEATURE_COLUMNS if column in feature_columns],
         },
+        "model_health": model_health,
         "validation_reports": validation_reports,
     }
     write_json(root / "manifest.json", manifest)
@@ -396,6 +605,7 @@ def import_sportsdb_artifacts(
         "raw_team_last_files": supplemental_summary["team_payloads"],
         "raw_event_files": supplemental_summary["event_payloads"],
         "supplemental_events": supplemental_summary["event_count"],
+        "espn_team_schedules": espn_schedule_result_summary(espn_schedule_summary),
         "events": len(games),
         "final_games": len(training_rows),
         "snapshot_dates": snapshot_dates,
@@ -403,6 +613,7 @@ def import_sportsdb_artifacts(
         "team_stats": str(team_stats_path),
         "market_lines": str(market_lines_path) if market_lines else None,
         "feature_count": len(feature_columns),
+        "model_health": model_health,
         "market_line_matches": sum(1 for row in training_rows if row.get("MARKET_TOTAL_CLOSE") is not None),
         "market_line_source_counts": market_line_source_counts(market_lines),
         "market_line_auto": auto_market_summary,
@@ -410,6 +621,11 @@ def import_sportsdb_artifacts(
             1
             for row in training_rows
             if row.get("HOME_UNAVAILABLE_MINUTES", 0.0) or row.get("AWAY_UNAVAILABLE_MINUTES", 0.0)
+        ),
+        "team_game_log_matches": sum(
+            1
+            for row in training_rows
+            if any(row.get(column) is not None for column in BOXSCORE_FEATURE_COLUMNS)
         ),
     }
     if validation_reports:
@@ -421,6 +637,75 @@ def import_sportsdb_artifacts(
         "artifact_dir": str(root),
         "validation": inventory["validation"],
     }
+
+
+def build_model_health(
+    training_rows: list[dict[str, Any]],
+    feature_columns: list[str],
+    models: dict[str, dict[str, Any]],
+    enforce_quality_gates: bool,
+) -> dict[str, Any]:
+    issues: list[str] = []
+    warnings: list[str] = []
+    row_count = len(training_rows)
+    feature_count = len(feature_columns)
+    rows_per_feature = row_count / max(1, feature_count)
+
+    bad_scores = [
+        row
+        for row in training_rows
+        if not plausible_training_score(row.get("Score"), row.get("Home-Margin"))
+    ]
+    if bad_scores:
+        issues.append(f"{len(bad_scores)} training rows have implausible NBA scores")
+
+    if row_count < 300:
+        (issues if enforce_quality_gates else warnings).append(
+            f"training row count {row_count} is below recommended minimum 300"
+        )
+    if rows_per_feature < 3.0:
+        (issues if enforce_quality_gates else warnings).append(
+            f"rows per feature {round(rows_per_feature, 2)} is below recommended minimum 3.0"
+        )
+
+    total_rmse = numeric_model_metric(models["total_score"], "validation_rmse")
+    margin_rmse = numeric_model_metric(models["home_margin"], "validation_rmse")
+    if total_rmse is not None and total_rmse > 45.0:
+        (issues if enforce_quality_gates else warnings).append(
+            f"total_score validation_rmse {round(total_rmse, 2)} exceeds 45.0"
+        )
+    if margin_rmse is not None and margin_rmse > 30.0:
+        (issues if enforce_quality_gates else warnings).append(
+            f"home_margin validation_rmse {round(margin_rmse, 2)} exceeds 30.0"
+        )
+
+    status = "failed" if issues else "warning" if warnings else "ok"
+    return {
+        "status": status,
+        "issues": issues,
+        "warnings": warnings,
+        "training_row_count": row_count,
+        "feature_count": feature_count,
+        "rows_per_feature": round(rows_per_feature, 4),
+        "validation": {
+            "total_score_rmse": total_rmse,
+            "home_margin_rmse": margin_rmse,
+        },
+        "gates_enforced": enforce_quality_gates,
+    }
+
+
+def plausible_training_score(score: Any, margin: Any) -> bool:
+    score_number = finite_or_none(score)
+    margin_number = finite_or_none(margin)
+    if score_number is None or margin_number is None:
+        return False
+    return 120.0 <= score_number <= 320.0 and abs(margin_number) <= 80.0
+
+
+def numeric_model_metric(model: dict[str, Any], key: str) -> float | None:
+    value = model.get("metrics", {}).get(key)
+    return finite_or_none(value)
 
 
 def collect_supplemental_games(
@@ -479,6 +764,170 @@ def collect_supplemental_games(
     }
 
 
+def collect_espn_team_schedule_games(
+    client: EspnScheduleImportClient,
+    raw_root: Path,
+    selected_seasons: list[str],
+    lookback_seasons: int,
+) -> dict[str, Any]:
+    seasons = selected_seasons[-lookback_seasons:]
+    if not seasons:
+        return {
+            "enabled": True,
+            "seasons": [],
+            "teams": 0,
+            "schedule_payloads": 0,
+            "event_count": 0,
+            "games": [],
+        }
+
+    teams_payload = client.fetch_teams()
+    write_raw_json(raw_root / "espn" / "teams.json", teams_payload)
+    teams = parse_espn_teams(teams_payload)
+    if not teams:
+        raise SportsDbError("ESPN team schedule import found no NBA teams")
+
+    games: list[SportsDbGame] = []
+    schedule_payloads = 0
+    for season in seasons:
+        season_year = espn_season_year(season)
+        for team in teams:
+            payload = client.fetch_team_schedule(team.team_id, season_year)
+            schedule_payloads += 1
+            write_raw_json(
+                raw_root / "espn" / "schedules" / season / f"{safe_filename(team.team_id)}.json",
+                payload,
+            )
+            games.extend(parse_espn_schedule_games(payload, fallback_season=season))
+
+    deduped_games = dedupe_games(games)
+    return {
+        "enabled": True,
+        "seasons": seasons,
+        "teams": len(teams),
+        "schedule_payloads": schedule_payloads,
+        "event_count": len(deduped_games),
+        "completed_events": sum(1 for game in deduped_games if game.is_final),
+        "games": deduped_games,
+    }
+
+
+def espn_schedule_data_source_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(summary.get("enabled")),
+        "seasons": summary.get("seasons", []),
+        "teams": int(summary.get("teams", 0) or 0),
+        "schedule_payloads": int(summary.get("schedule_payloads", 0) or 0),
+        "event_count": int(summary.get("event_count", 0) or 0),
+        "completed_events": int(summary.get("completed_events", 0) or 0),
+        "source": "espn_site_team_schedule",
+    }
+
+
+def espn_schedule_result_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    data = espn_schedule_data_source_summary(summary)
+    data.pop("source", None)
+    return data
+
+
+def parse_espn_teams(payload: dict[str, Any]) -> list[EspnScheduleTeam]:
+    teams: list[EspnScheduleTeam] = []
+    for sport in list_value(payload.get("sports")):
+        for league in list_value(record_value(sport).get("leagues")):
+            for item in list_value(record_value(league).get("teams")):
+                team = record_value(record_value(item).get("team"))
+                team_id = clean_string(team.get("id"))
+                name = first_text(team, "displayName", "name", "shortDisplayName") or team_id
+                if team_id and name:
+                    teams.append(EspnScheduleTeam(team_id=team_id, name=name))
+    return sorted(
+        {team.team_id: team for team in teams}.values(),
+        key=lambda team: (0, int(team.team_id)) if team.team_id.isdigit() else (1, team.team_id),
+    )
+
+
+def parse_espn_schedule_games(payload: dict[str, Any], fallback_season: str) -> list[SportsDbGame]:
+    return [
+        game
+        for game in (parse_espn_schedule_game(event, fallback_season) for event in list_value(payload.get("events")))
+        if game is not None
+    ]
+
+
+def parse_espn_schedule_game(event: Any, fallback_season: str) -> SportsDbGame | None:
+    event_record = record_value(event)
+    competition = record_value(first_list_item(event_record.get("competitions")))
+    competitors = list_value(competition.get("competitors"))
+    home = next((record_value(item) for item in competitors if record_value(item).get("homeAway") == "home"), {})
+    away = next((record_value(item) for item in competitors if record_value(item).get("homeAway") == "away"), {})
+    home_team = espn_competitor_team_name(home)
+    away_team = espn_competitor_team_name(away)
+    event_id = first_text(event_record, "id") or first_text(competition, "id")
+    game_date = espn_event_date(first_text(event_record, "date") or first_text(competition, "date"))
+    if not event_id or not game_date or not home_team or not away_team:
+        return None
+    status_record = record_value(competition.get("status"))
+    status_type = record_value(status_record.get("type"))
+    status = first_text(status_type, "description", "detail", "shortDetail", "state") or ""
+    if status_type.get("completed") is True and not status:
+        status = "Final"
+    return SportsDbGame(
+        event_id=f"espn:{event_id}",
+        season=fallback_season,
+        date=game_date,
+        home_team=home_team,
+        away_team=away_team,
+        home_score=espn_competitor_score(home),
+        away_score=espn_competitor_score(away),
+        status=status,
+    )
+
+
+def espn_competitor_score(competitor: dict[str, Any]) -> float | None:
+    score = competitor.get("score")
+    if isinstance(score, dict):
+        return first_number(score, "value", "displayValue")
+    return number_or_none(score)
+
+
+def espn_competitor_team_name(competitor: dict[str, Any]) -> str:
+    team = record_value(competitor.get("team"))
+    return first_text(team, "displayName", "shortDisplayName", "name", "abbreviation") or ""
+
+
+def espn_event_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = value.strip()
+    if is_iso_date(text):
+        return text
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(NBA_GAME_TIMEZONE)
+    return parsed.date().isoformat()
+
+
+def espn_season_year(season: str) -> int:
+    if "-" in season:
+        try:
+            return int(season.split("-")[-1])
+        except ValueError:
+            pass
+    try:
+        return int(season[:4]) + 1
+    except ValueError as exc:
+        raise SportsDbError(f"Cannot convert season to ESPN season year: {season}") from exc
+
+
+def build_espn_site_url(path_parts: list[str], query: dict[str, str]) -> str:
+    path = "/".join(urllib.parse.quote(part.strip("/"), safe="") for part in path_parts)
+    encoded_query = urllib.parse.urlencode(query)
+    return f"{ESPN_SITE_ORIGIN}/{path}" + (f"?{encoded_query}" if encoded_query else "")
+
+
 def current_import_date(value: date | datetime | None) -> date:
     if value is None:
         return datetime.now().date()
@@ -506,15 +955,17 @@ def safe_filename(value: str) -> str:
 
 
 def dedupe_games(games: list[SportsDbGame]) -> list[SportsDbGame]:
-    by_id: dict[str, SportsDbGame] = {}
+    by_id: dict[tuple[str, str, str], SportsDbGame] = {}
     for game in games:
-        current = by_id.get(game.event_id)
+        current = by_id.get(matchup_key(game.date, game.home_team, game.away_team))
         if current is None or game_quality(game) >= game_quality(current):
-            by_id[game.event_id] = game
+            by_id[matchup_key(game.date, game.home_team, game.away_team)] = game
     return sorted(by_id.values(), key=lambda game: (game.date, game.event_id))
 
 
 def game_quality(game: SportsDbGame) -> int:
+    if game.is_final:
+        return 4
     if game.home_score is not None and game.away_score is not None:
         return 3
     if game.home_score is not None or game.away_score is not None:
@@ -847,6 +1298,39 @@ def load_availability_csv(path: str | Path) -> dict[tuple[str, str], Availabilit
     return availability
 
 
+def load_team_game_log_csv(path: str | Path) -> dict[tuple[str, str], dict[str, float]]:
+    logs: dict[tuple[str, str], dict[str, float]] = {}
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            date = first_text(row, "game_date", "date", "Date")
+            team = first_text(row, "team", "team_name", "Team", "TEAM_NAME")
+            if not date or not team:
+                continue
+            stats: dict[str, float] = {}
+            for stat in BOXSCORE_STATS:
+                value = first_number(row, stat, stat.lower(), stat.replace("P", "p"))
+                if value is not None:
+                    stats[stat] = value
+            if stats:
+                logs[(date, normalize_match_name(team))] = stats
+    return logs
+
+
+def add_team_game_log_features(
+    row: dict[str, Any],
+    game: SportsDbGame,
+    team_game_logs: dict[tuple[str, str], dict[str, float]],
+) -> None:
+    home_log = team_game_logs.get((game.date, normalize_match_name(game.home_team)))
+    away_log = team_game_logs.get((game.date, normalize_match_name(game.away_team)))
+    if home_log:
+        for stat, value in home_log.items():
+            row[f"HOME_{stat}"] = value
+    if away_log:
+        for stat, value in away_log.items():
+            row[f"AWAY_{stat}"] = value
+
+
 def data_source_summary(path: str | Path | None, matched_rows: int) -> dict[str, Any]:
     return {
         "configured": path is not None,
@@ -893,6 +1377,19 @@ def first_text(row: dict[str, Any], *keys: str) -> str | None:
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def record_value(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def first_list_item(value: Any) -> Any:
+    values = list_value(value)
+    return values[0] if values else None
 
 
 def first_number(row: dict[str, Any], *keys: str) -> float | None:
@@ -970,6 +1467,7 @@ def parse_game(event: dict[str, Any], fallback_season: str) -> SportsDbGame | No
     home_team = clean_string(event.get("strHomeTeam"))
     away_team = clean_string(event.get("strAwayTeam"))
     date = clean_string(event.get("dateEvent"))
+    status = first_text(event, "strStatus", "strProgress", "status") or ""
     if not event_id or not home_team or not away_team or not date:
         return None
     if not is_iso_date(date):
@@ -982,7 +1480,12 @@ def parse_game(event: dict[str, Any], fallback_season: str) -> SportsDbGame | No
         away_team=away_team,
         home_score=number_or_none(event.get("intHomeScore")),
         away_score=number_or_none(event.get("intAwayScore")),
+        status=status,
     )
+
+
+def normalize_status(value: str) -> str:
+    return clean_string(value).lower().replace(".", "")
 
 
 def build_training_and_snapshots(
@@ -992,6 +1495,7 @@ def build_training_and_snapshots(
     team_stats_path: Path,
     market_lines: dict[tuple[str, str, str], MarketLine] | None = None,
     availability: dict[tuple[str, str], Availability] | None = None,
+    team_game_logs: dict[tuple[str, str], dict[str, float]] | None = None,
     rating_features: str = "none",
     rating_line_source: str = "close",
     skill_features: str = "none",
@@ -1000,6 +1504,7 @@ def build_training_and_snapshots(
     snapshot_dates = 0
     market_lines = market_lines or {}
     availability = availability or {}
+    team_game_logs = team_game_logs or {}
 
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     team_stats_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1047,6 +1552,8 @@ def build_training_and_snapshots(
                         availability,
                         first_season_date,
                     )
+                    add_team_game_log_features(row, game, team_game_logs)
+                    add_projection_baseline_features(row)
                     training_rows.append(row)
                     apply_game_result(states, game)
                     if rating_features == "market":
@@ -1151,6 +1658,108 @@ def add_enriched_game_features(
         row["MARKET_TOTAL_MOVE"] = market_line.closing_total - market_line.opening_total
     if market_line.opening_spread is not None and market_line.closing_spread is not None:
         row["MARKET_SPREAD_MOVE"] = market_line.closing_spread - market_line.opening_spread
+
+
+def add_projection_baseline_features(row: dict[str, Any]) -> None:
+    projection = baseline_projection_from_row(row)
+    row[BASELINE_TOTAL_FEATURE] = projection["total"]
+    row[BASELINE_HOME_MARGIN_FEATURE] = projection["home_margin"]
+
+
+def baseline_projection_from_row(row: dict[str, Any]) -> dict[str, float]:
+    home_offense = blended_team_points(row, suffix="")
+    away_offense = blended_team_points(row, suffix=".1")
+    home_defense = blended_team_allowed(row, suffix="")
+    away_defense = blended_team_allowed(row, suffix=".1")
+    home_expected = (home_offense + away_defense) / 2.0
+    away_expected = (away_offense + home_defense) / 2.0
+    total = home_expected + away_expected
+    margin = home_expected - away_expected
+
+    skill_total = finite_or_none(row.get("SKILL_TOTAL_PRIOR"))
+    if skill_total is not None:
+        total = 0.65 * total + 0.35 * skill_total
+    market_environment = finite_or_none(row.get("MARKET_TOTAL_TEAM_ENVIRONMENT_PRIOR"))
+    if market_environment is not None:
+        total = 0.85 * total + 0.15 * market_environment
+
+    skill_margin = finite_or_none(row.get("SKILL_MARGIN_PRIOR"))
+    if skill_margin is not None:
+        margin = 0.65 * margin + 0.35 * skill_margin
+    elo_delta = finite_or_none(row.get("ELO_DELTA"))
+    if elo_delta is not None:
+        margin += 0.015 * elo_delta
+    margin += 2.2
+    margin += 0.35 * clamp(
+        (finite_or_none(row.get("DAYS_REST")) or DEFAULT_FIRST_GAME_REST_DAYS)
+        - (finite_or_none(row.get("DAYS_REST.1")) or DEFAULT_FIRST_GAME_REST_DAYS),
+        -3.0,
+        3.0,
+    )
+    margin -= 1.0 * (finite_or_none(row.get("HOME_BACK_TO_BACK")) or 0.0)
+    margin += 1.0 * (finite_or_none(row.get("AWAY_BACK_TO_BACK")) or 0.0)
+
+    return {
+        "total": round(clamp(total, 170.0, 270.0), 6),
+        "home_margin": round(clamp(margin, -35.0, 35.0), 6),
+    }
+
+
+def blended_team_points(row: dict[str, Any], suffix: str) -> float:
+    season = finite_or_none(row.get(f"SEASON_AVG_POINTS_FOR{suffix}"))
+    rolling10 = finite_or_none(row.get(f"ROLLING10_AVG_POINTS_FOR{suffix}"))
+    rolling3 = finite_or_none(row.get(f"ROLLING3_AVG_POINTS_FOR{suffix}"))
+    venue = finite_or_none(row.get(("HOME_AVG_POINTS_FOR" if suffix == "" else "AWAY_AVG_POINTS_FOR") + suffix))
+    return weighted_average(
+        [
+            (season, 0.40),
+            (rolling10, 0.30),
+            (rolling3, 0.20),
+            (venue, 0.10),
+        ],
+        112.0,
+    )
+
+
+def blended_team_allowed(row: dict[str, Any], suffix: str) -> float:
+    season = finite_or_none(row.get(f"SEASON_AVG_POINTS_AGAINST{suffix}"))
+    rolling10 = finite_or_none(row.get(f"ROLLING10_AVG_POINTS_AGAINST{suffix}"))
+    rolling3 = finite_or_none(row.get(f"ROLLING3_AVG_POINTS_AGAINST{suffix}"))
+    venue = finite_or_none(row.get(("HOME_AVG_POINTS_AGAINST" if suffix == "" else "AWAY_AVG_POINTS_AGAINST") + suffix))
+    return weighted_average(
+        [
+            (season, 0.40),
+            (rolling10, 0.30),
+            (rolling3, 0.20),
+            (venue, 0.10),
+        ],
+        112.0,
+    )
+
+
+def weighted_average(values: list[tuple[float | None, float]], default: float) -> float:
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for value, weight in values:
+        if value is None or value <= 0:
+            continue
+        weighted_sum += value * weight
+        total_weight += weight
+    if total_weight == 0:
+        return default
+    return weighted_sum / total_weight
+
+
+def finite_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return min(maximum, max(minimum, value))
 
 
 def season_week(first_season_date: str | None, game_date: str) -> float:
@@ -1263,16 +1872,20 @@ def update_team_state(
 
 
 def derive_feature_columns(rows: list[dict[str, Any]]) -> list[str]:
-    columns = [
+    available = {
+        column
+        for row in rows
+        for column in row.keys()
+        if column not in ALL_TARGET_COLUMNS and column not in DROP_COLUMNS
+    }
+    stable_columns = [column for column in STABLE_FEATURE_CANDIDATES if column in available]
+    if stable_columns:
+        return stable_columns
+    return [
         column
         for column in rows[0].keys()
         if column not in ALL_TARGET_COLUMNS and column not in DROP_COLUMNS
     ]
-    for row in rows[1:]:
-        for column in row.keys():
-            if column not in columns and column not in ALL_TARGET_COLUMNS and column not in DROP_COLUMNS:
-                columns.append(column)
-    return columns
 
 
 def build_feature_defaults(rows: list[dict[str, Any]], feature_columns: list[str]) -> dict[str, float]:
@@ -1296,12 +1909,20 @@ def train_linear_model(
     training_rows = [row for row in rows if is_finite(row.get(target_column))]
     if not training_rows:
         raise SportsDbError(f"No rows available for target: {target_column}")
-    x = [[1.0, *[feature_value(row, column, defaults) for column in feature_columns]] for row in training_rows]
+    scaler = feature_scaler(training_rows, feature_columns, defaults)
+    x = [
+        [1.0, *standardized_feature_values(row, feature_columns, defaults, scaler)]
+        for row in training_rows
+    ]
     y = [float(row[target_column]) for row in training_rows]
-    coefficients = solve_ridge_regression(x, y, ridge=1.0)
+    standardized_coefficients = solve_ridge_regression(x, y, ridge=ridge_for_feature_count(len(feature_columns)))
+    coefficients = raw_coefficients_from_standardized(standardized_coefficients, feature_columns, scaler)
     residuals = chronological_linear_residuals(training_rows, feature_columns, target_column, defaults, validation_splits)
     if not residuals:
-        predictions = [sum(weight * value for weight, value in zip(coefficients, row)) for row in x]
+        predictions = [
+            predict_linear_coefficients(row, feature_columns, defaults, coefficients)
+            for row in training_rows
+        ]
         residuals = [prediction - target for prediction, target in zip(predictions, y)]
     metrics = metrics_from_residuals(residuals)
     metrics["validation"] = {
@@ -1318,8 +1939,100 @@ def train_linear_model(
             column: round(coefficients[index + 1], 8)
             for index, column in enumerate(feature_columns)
         },
+        "component": {
+            "name": "standardized_ridge",
+            "type": "linear",
+            "intercept": round(coefficients[0], 8),
+            "coefficients": {
+                column: round(coefficients[index + 1], 8)
+                for index, column in enumerate(feature_columns)
+            },
+        },
         "metrics": metrics,
     }
+
+
+def train_ensemble_model(
+    rows: list[dict[str, Any]],
+    feature_columns: list[str],
+    model_key: str,
+    validation_splits: int,
+) -> dict[str, Any]:
+    target_column = target_column_for(model_key, "direct")
+    baseline_feature = BASELINE_TOTAL_FEATURE if model_key == "total_score" else BASELINE_HOME_MARGIN_FEATURE
+    linear_model = train_linear_model(rows, feature_columns, target_column, validation_splits)
+    prediction_rows = chronological_linear_prediction_rows(
+        rows,
+        feature_columns,
+        target_column,
+        "direct",
+        validation_splits,
+        model_key,
+    )
+    linear_weight = select_linear_blend_weight(prediction_rows, baseline_feature)
+    residuals = [
+        blended_prediction_residual(item, baseline_feature, linear_weight)
+        for item in prediction_rows
+        if is_finite(item["row"].get(baseline_feature))
+    ]
+    if not residuals:
+        residuals = []
+    metrics = metrics_from_residuals(residuals)
+    metrics["validation"] = {
+        "method": "rolling_origin_stacked_blend",
+        "splits": len(chronological_splits(len([row for row in rows if is_finite(row.get(target_column))]), validation_splits)),
+        "rows": metrics["validation_rows"],
+        "rmse": metrics["validation_rmse"],
+        "mae": metrics["validation_mae"],
+        "residual_stddev": metrics["residual_stddev"],
+    }
+    baseline_weight = round(1.0 - linear_weight, 6)
+    linear_weight = round(linear_weight, 6)
+    clip = {"min": 150.0, "max": 280.0} if model_key == "total_score" else {"min": -45.0, "max": 45.0}
+    return {
+        "components": [
+            {
+                "name": "deterministic_baseline",
+                "type": "feature",
+                "feature": baseline_feature,
+                "weight": baseline_weight,
+            },
+            {
+                **linear_model["component"],
+                "weight": linear_weight,
+            },
+        ],
+        "clip": clip,
+        "metrics": metrics,
+        "ensemble_weights": {
+            "deterministic_baseline": baseline_weight,
+            "standardized_ridge": linear_weight,
+        },
+    }
+
+
+def select_linear_blend_weight(prediction_rows: list[dict[str, Any]], baseline_feature: str) -> float:
+    candidates = [0.0, 0.25, 0.5, 0.75, 1.0]
+    scored: list[tuple[float, float]] = []
+    for weight in candidates:
+        residuals = [
+            blended_prediction_residual(item, baseline_feature, weight)
+            for item in prediction_rows
+            if is_finite(item["row"].get(baseline_feature))
+        ]
+        if residuals:
+            rmse = math.sqrt(sum(value * value for value in residuals) / len(residuals))
+            scored.append((rmse, weight))
+    if not scored:
+        return 0.5
+    return min(scored, key=lambda item: item[0])[1]
+
+
+def blended_prediction_residual(item: dict[str, Any], baseline_feature: str, linear_weight: float) -> float:
+    row = item["row"]
+    baseline_prediction = float(row[baseline_feature])
+    prediction = linear_weight * float(item["prediction"]) + (1.0 - linear_weight) * baseline_prediction
+    return prediction - float(item["target"])
 
 
 def train_best_linear_model(
@@ -1333,11 +2046,14 @@ def train_best_linear_model(
     if model_kind in {"direct", "auto"}:
         candidates.append((
             "direct",
-            train_linear_model(rows, feature_columns, target_column_for(model_key, "direct"), validation_splits),
+            train_ensemble_model(rows, feature_columns, model_key, validation_splits),
         ))
     if model_kind in {"market-residual", "auto"}:
         residual_target = target_column_for(model_key, "market_residual")
-        if any(is_finite(row.get(residual_target)) for row in rows):
+        market_residual_rows = sum(1 for row in rows if is_finite(row.get(residual_target)))
+        if market_residual_rows >= MIN_MARKET_RESIDUAL_ROWS or (
+            model_kind == "market-residual" and market_residual_rows > 0
+        ):
             candidates.append((
                 "market_residual",
                 train_linear_model(rows, feature_columns, residual_target, validation_splits),
@@ -1362,12 +2078,16 @@ def chronological_linear_residuals(
     for train_indexes, test_indexes in chronological_splits(len(rows), validation_splits):
         train_rows = [rows[index] for index in train_indexes]
         test_rows = [rows[index] for index in test_indexes]
-        x_train = [[1.0, *[feature_value(row, column, defaults) for column in feature_columns]] for row in train_rows]
+        scaler = feature_scaler(train_rows, feature_columns, defaults)
+        x_train = [
+            [1.0, *standardized_feature_values(row, feature_columns, defaults, scaler)]
+            for row in train_rows
+        ]
         y_train = [float(row[target_column]) for row in train_rows]
-        coefficients = solve_ridge_regression(x_train, y_train, ridge=1.0)
+        standardized_coefficients = solve_ridge_regression(x_train, y_train, ridge=ridge_for_feature_count(len(feature_columns)))
+        coefficients = raw_coefficients_from_standardized(standardized_coefficients, feature_columns, scaler)
         for row in test_rows:
-            features = [1.0, *[feature_value(row, column, defaults) for column in feature_columns]]
-            prediction = sum(weight * value for weight, value in zip(coefficients, features))
+            prediction = predict_linear_coefficients(row, feature_columns, defaults, coefficients)
             residuals.append(prediction - float(row[target_column]))
     return residuals
 
@@ -1432,9 +2152,14 @@ def chronological_linear_prediction_rows(
     for fold_id, (train_indexes, test_indexes) in enumerate(chronological_splits(len(training_rows), validation_splits)):
         train_rows = [training_rows[index] for index in train_indexes]
         test_rows = [training_rows[index] for index in test_indexes]
-        x_train = [[1.0, *[feature_value(row, column, defaults) for column in feature_columns]] for row in train_rows]
+        scaler = feature_scaler(train_rows, feature_columns, defaults)
+        x_train = [
+            [1.0, *standardized_feature_values(row, feature_columns, defaults, scaler)]
+            for row in train_rows
+        ]
         y_train = [float(row[target_column]) for row in train_rows]
-        coefficients = solve_ridge_regression(x_train, y_train, ridge=1.0)
+        standardized_coefficients = solve_ridge_regression(x_train, y_train, ridge=ridge_for_feature_count(len(feature_columns)))
+        coefficients = raw_coefficients_from_standardized(standardized_coefficients, feature_columns, scaler)
         train_residuals = [
             prediction_residual_for_row(row, feature_columns, defaults, coefficients, target_mode, model_key)
             for row in train_rows
@@ -1480,6 +2205,56 @@ def prediction_residual_for_row(
     actual_prediction = raw_prediction + baseline
     actual_target = float(row["Score"] if model_key == "total_score" else row["Home-Margin"])
     return actual_prediction - actual_target
+
+
+def feature_scaler(
+    rows: list[dict[str, Any]],
+    feature_columns: list[str],
+    defaults: dict[str, float],
+) -> dict[str, tuple[float, float]]:
+    scaler: dict[str, tuple[float, float]] = {}
+    for column in feature_columns:
+        values = [feature_value(row, column, defaults) for row in rows]
+        if not values:
+            scaler[column] = (0.0, 1.0)
+            continue
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        stddev = math.sqrt(variance)
+        scaler[column] = (mean, stddev if stddev > 1e-9 else 1.0)
+    return scaler
+
+
+def standardized_feature_values(
+    row: dict[str, Any],
+    feature_columns: list[str],
+    defaults: dict[str, float],
+    scaler: dict[str, tuple[float, float]],
+) -> list[float]:
+    values: list[float] = []
+    for column in feature_columns:
+        mean, stddev = scaler[column]
+        values.append((feature_value(row, column, defaults) - mean) / stddev)
+    return values
+
+
+def raw_coefficients_from_standardized(
+    coefficients: list[float],
+    feature_columns: list[str],
+    scaler: dict[str, tuple[float, float]],
+) -> list[float]:
+    intercept = coefficients[0]
+    raw_weights: list[float] = []
+    for column, coefficient in zip(feature_columns, coefficients[1:]):
+        mean, stddev = scaler[column]
+        raw_weight = coefficient / stddev
+        raw_weights.append(raw_weight)
+        intercept -= coefficient * mean / stddev
+    return [intercept, *raw_weights]
+
+
+def ridge_for_feature_count(feature_count: int) -> float:
+    return max(10.0, float(feature_count) * 2.0)
 
 
 def predict_linear_coefficients(
@@ -1686,7 +2461,20 @@ def quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def model_artifact_type(model: dict[str, Any]) -> str:
+    return "ensemble_json" if "components" in model else "linear_json"
+
+
 def write_model(path: Path, model: dict[str, Any]) -> None:
+    if "components" in model:
+        write_json(
+            path,
+            {
+                "components": model["components"],
+                "clip": model.get("clip"),
+            },
+        )
+        return
     write_json(
         path,
         {

@@ -336,6 +336,8 @@ function HistoricalSettingsPanel(props: {
         <SettingsMetric label="Interval" value={formatInterval(status?.interval_seconds)} />
         <SettingsMetric label="Recent window" value={formatDays(status?.recent_days)} />
         <SettingsMetric label="Lookahead" value={formatDays(status?.lookahead_days)} />
+        <SettingsMetric label="ESPN history" value={status?.espn_team_schedules_enabled ? "Enabled" : "Disabled"} />
+        <SettingsMetric label="ESPN seasons" value={formatCount(status?.espn_lookback_seasons)} />
         <SettingsMetric label="Last success" value={formatTimestamp(status?.last_success_at)} />
         <SettingsMetric label="Last error" value={status?.last_error || "None"} />
       </div>

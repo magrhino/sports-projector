@@ -297,7 +297,8 @@ function isGuardedHistoricalError(error: unknown): boolean {
   return (
     error.code === "stale_team_snapshot" ||
     error.code === "future_team_snapshot" ||
-    error.code === "implausible_projection"
+    error.code === "implausible_projection" ||
+    error.code === "invalid_model_health"
   );
 }
 
