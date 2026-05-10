@@ -292,15 +292,30 @@ function promotedRefreshStdout(stdout: string, stagingDir: string, artifactDir: 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return stdout;
     }
-    return JSON.stringify({
+    const promoted: Record<string, unknown> = {
       ...(parsed as Record<string, unknown>),
       artifact_dir: artifactDir,
       staged_artifact_dir: path.basename(stagingDir),
       promoted: true
-    });
+    };
+    for (const key of ["dataset", "team_stats", "market_lines"]) {
+      const value = promoted[key];
+      if (typeof value === "string") {
+        promoted[key] = promotedRefreshPath(value, stagingDir, artifactDir);
+      }
+    }
+    return JSON.stringify(promoted);
   } catch {
     return stdout;
   }
+}
+
+function promotedRefreshPath(value: string, stagingDir: string, artifactDir: string): string {
+  const relativePath = path.relative(path.resolve(stagingDir), path.resolve(value));
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return value;
+  }
+  return path.join(artifactDir, relativePath);
 }
 
 export function historicalRefreshArgs(config: HistoricalRefreshConfig): string[] {

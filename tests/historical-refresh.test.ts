@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
@@ -8,6 +8,7 @@ import {
   historicalRefreshArgs,
   historicalRefreshConfigFromEnv,
   promoteHistoricalStagingDir,
+  runHistoricalRefreshCommand,
   type HistoricalRefreshConfig
 } from "../src/nba/historical-refresh.js";
 
@@ -182,6 +183,59 @@ describe("promoteHistoricalStagingDir", () => {
       promoteHistoricalStagingDir(staging, target);
 
       expect(readFileSync(path.join(target, "manifest.json"), "utf-8")).toBe(JSON.stringify({ version: "new" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runHistoricalRefreshCommand", () => {
+  it("reports promoted artifact paths instead of deleted staging paths", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-refresh-run-"));
+    try {
+      const fakePython = path.join(dir, "fake-python.cjs");
+      writeFileSync(
+        fakePython,
+        `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const artifactDir = process.argv[process.argv.indexOf("--artifact-dir") + 1];
+const normalized = path.join(artifactDir, "sportsdb", "normalized");
+fs.mkdirSync(normalized, { recursive: true });
+fs.writeFileSync(path.join(artifactDir, "manifest.json"), "{}");
+process.stdout.write(JSON.stringify({
+  ok: true,
+  artifact_dir: artifactDir,
+  dataset: path.join(normalized, "nba_games.sqlite"),
+  team_stats: path.join(normalized, "nba_team_stats.sqlite"),
+  market_lines: path.join(normalized, "nba_market_lines.sqlite")
+}));
+`,
+        "utf-8"
+      );
+      chmodSync(fakePython, 0o755);
+      const artifactDir = path.join(dir, "historical");
+
+      const result = await runHistoricalRefreshCommand({
+        ...config(),
+        root: dir,
+        artifactDir,
+        python: fakePython,
+        marketTotalsEnabled: false,
+        espnTeamSchedulesEnabled: false
+      });
+
+      const payload = JSON.parse(result.stdout);
+      expect(payload).toMatchObject({
+        ok: true,
+        artifact_dir: artifactDir,
+        dataset: path.join(artifactDir, "sportsdb", "normalized", "nba_games.sqlite"),
+        team_stats: path.join(artifactDir, "sportsdb", "normalized", "nba_team_stats.sqlite"),
+        market_lines: path.join(artifactDir, "sportsdb", "normalized", "nba_market_lines.sqlite"),
+        promoted: true
+      });
+      expect(payload.staged_artifact_dir).toMatch(/^\.historical-refresh-/);
+      expect(readFileSync(path.join(artifactDir, "manifest.json"), "utf-8")).toBe("{}");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
