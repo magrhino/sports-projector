@@ -264,26 +264,46 @@ function createHistoricalStagingDir(artifactDir: string): string {
 }
 
 export function promoteHistoricalStagingDir(stagingDir: string, artifactDir: string): void {
-  const backupDir = `${artifactDir}.previous-${Date.now()}`;
+  const backupDir = uniqueHistoricalBackupDir(artifactDir);
   let backedUp = false;
+
+  if (existsSync(artifactDir)) {
+    renameSync(artifactDir, backupDir);
+    backedUp = true;
+  }
+
   try {
-    if (existsSync(artifactDir)) {
-      renameSync(artifactDir, backupDir);
-      backedUp = true;
-    }
     renameSync(stagingDir, artifactDir);
-    if (backedUp) {
-      rmSync(backupDir, { recursive: true, force: true });
-    }
   } catch (error) {
-    if (existsSync(artifactDir)) {
-      rmSync(artifactDir, { recursive: true, force: true });
-    }
-    if (backedUp && existsSync(backupDir)) {
+    if (backedUp && !existsSync(artifactDir) && existsSync(backupDir)) {
       renameSync(backupDir, artifactDir);
     }
     throw error;
   }
+
+  if (backedUp) {
+    try {
+      rmSync(backupDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`Unable to remove previous historical artifact backup at ${backupDir}: ${errorMessage(error)}`);
+    }
+  }
+}
+
+function uniqueHistoricalBackupDir(artifactDir: string): string {
+  const baseDir = `${artifactDir}.previous-${Date.now()}`;
+  if (!existsSync(baseDir)) {
+    return baseDir;
+  }
+
+  for (let suffix = 1; suffix < 1000; suffix += 1) {
+    const candidate = `${baseDir}-${suffix}`;
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Unable to allocate historical artifact backup directory for ${artifactDir}.`);
 }
 
 function promotedRefreshStdout(stdout: string, stagingDir: string, artifactDir: string): string {
@@ -381,6 +401,10 @@ function parseRefreshJson(stdout: string): Record<string, unknown> {
     throw new Error(`historical refresh returned an error: ${JSON.stringify((parsed as Record<string, unknown>).error)}`);
   }
   return parsed as Record<string, unknown>;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
