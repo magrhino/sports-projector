@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -183,6 +183,48 @@ describe("promoteHistoricalStagingDir", () => {
       promoteHistoricalStagingDir(staging, target);
 
       expect(readFileSync(path.join(target, "manifest.json"), "utf-8")).toBe(JSON.stringify({ version: "new" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a unique backup path when the timestamped backup already exists", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-promote-"));
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(123);
+    try {
+      const target = path.join(dir, "historical");
+      const staging = path.join(dir, ".historical-refresh-abc");
+      const existingBackup = `${target}.previous-123`;
+      mkdirSync(target);
+      mkdirSync(staging);
+      mkdirSync(existingBackup);
+      writeFileSync(path.join(target, "manifest.json"), JSON.stringify({ version: "old" }));
+      writeFileSync(path.join(staging, "manifest.json"), JSON.stringify({ version: "new" }));
+      writeFileSync(path.join(existingBackup, "manifest.json"), JSON.stringify({ version: "collision" }));
+
+      promoteHistoricalStagingDir(staging, target);
+
+      expect(readFileSync(path.join(target, "manifest.json"), "utf-8")).toBe(JSON.stringify({ version: "new" }));
+      expect(readFileSync(path.join(existingBackup, "manifest.json"), "utf-8")).toBe(
+        JSON.stringify({ version: "collision" })
+      );
+    } finally {
+      dateNow.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the previous artifact directory when staged promotion fails after backup", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sports-projector-promote-"));
+    try {
+      const target = path.join(dir, "historical");
+      const missingStaging = path.join(dir, ".historical-refresh-missing");
+      mkdirSync(target);
+      writeFileSync(path.join(target, "manifest.json"), JSON.stringify({ version: "old" }));
+
+      expect(() => promoteHistoricalStagingDir(missingStaging, target)).toThrow();
+
+      expect(readFileSync(path.join(target, "manifest.json"), "utf-8")).toBe(JSON.stringify({ version: "old" }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

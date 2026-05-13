@@ -154,7 +154,7 @@ BOXSCORE_FEATURE_COLUMNS = [
     for side in ("HOME", "AWAY")
     for stat in BOXSCORE_STATS
 ]
-STABLE_FEATURE_CANDIDATES.extend(BOXSCORE_FEATURE_COLUMNS)
+BOXSCORE_FEATURE_COLUMN_SET = set(BOXSCORE_FEATURE_COLUMNS)
 
 
 class SportsDbImportClient(Protocol):
@@ -1876,7 +1876,9 @@ def derive_feature_columns(rows: list[dict[str, Any]]) -> list[str]:
         column
         for row in rows
         for column in row.keys()
-        if column not in ALL_TARGET_COLUMNS and column not in DROP_COLUMNS
+        if column not in ALL_TARGET_COLUMNS
+        and column not in DROP_COLUMNS
+        and column not in BOXSCORE_FEATURE_COLUMN_SET
     }
     stable_columns = [column for column in STABLE_FEATURE_CANDIDATES if column in available]
     if stable_columns:
@@ -1884,7 +1886,9 @@ def derive_feature_columns(rows: list[dict[str, Any]]) -> list[str]:
     return [
         column
         for column in rows[0].keys()
-        if column not in ALL_TARGET_COLUMNS and column not in DROP_COLUMNS
+        if column not in ALL_TARGET_COLUMNS
+        and column not in DROP_COLUMNS
+        and column not in BOXSCORE_FEATURE_COLUMN_SET
     ]
 
 

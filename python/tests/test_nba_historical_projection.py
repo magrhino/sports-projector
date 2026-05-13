@@ -34,6 +34,7 @@ from nba_historical_projection.providers.sportsdb import (
     build_sportsdb_url,
 )
 from nba_historical_projection.sportsdb_import import (
+    BOXSCORE_FEATURE_COLUMNS,
     TRAINING_TABLE,
     MarketLine,
     SportsDbGame,
@@ -907,6 +908,28 @@ class HistoricalProjectionTests(unittest.TestCase):
 
             self.assertEqual(logs[("2026-05-10", "minnesota timberwolves")]["FG"], 42.0)
             self.assertEqual(logs[("2026-05-10", "minnesota timberwolves")]["TRB"], 46.0)
+
+    def test_sportsdb_import_excludes_same_game_boxscore_stats_from_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            team_game_log_path = root / "team_game_logs.csv"
+            team_game_log_path.write_text(
+                "date,team,FG,FGA,3P,TRB,TOV\n"
+                "2025-10-21,Boston Celtics,42,88,14,46,11\n",
+                encoding="utf-8",
+            )
+
+            result = import_sportsdb_artifacts(
+                artifact_dir=root,
+                seasons=["2025-2026"],
+                client=FakeSportsDbClient(),
+                team_game_log_csv=team_game_log_path,
+            )
+
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertGreater(result["team_game_log_matches"], 0)
+            self.assertTrue(BOXSCORE_FEATURE_COLUMNS)
+            self.assertFalse(set(BOXSCORE_FEATURE_COLUMNS) & set(manifest["feature_columns"]))
 
     def test_sportsdb_import_writes_manifest_models_and_local_snapshots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
