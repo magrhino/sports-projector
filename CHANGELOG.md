@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.1...sports-projector-v0.9.2) (2026-05-13)
+
+
+### Bug Fixes
+
+* **historical:** protect artifact promotion and exclude boxscore leakage ([03239c9](https://github.com/magrhino/sports-projector/commit/03239c91b9a036aec0c25fe9315080837c7dd580))
+
 ## [0.9.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.0...sports-projector-v0.9.1) (2026-05-10)
 
 
