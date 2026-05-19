@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.2...sports-projector-v0.9.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* **ui:** refresh live scores more often ([5fd4b2b](https://github.com/magrhino/sports-projector/commit/5fd4b2b9703031b1404145719a493b956c042441))
+
 ## [0.9.2](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.1...sports-projector-v0.9.2) (2026-05-13)
 
 
