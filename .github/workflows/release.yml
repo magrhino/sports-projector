@@ -133,12 +133,14 @@ jobs:
           SHA: ${{ steps.release.outputs.sha }}
           SHA_OVERRIDE: ${{ steps.release_override.outputs.sha }}
         run: |
-          echo "release_created=${RELEASE_CREATED:-$RELEASE_CREATED_OVERRIDE}" >> "${GITHUB_OUTPUT}"
-          echo "tag_name=${TAG_NAME:-$TAG_NAME_OVERRIDE}" >> "${GITHUB_OUTPUT}"
-          echo "version=${VERSION:-$VERSION_OVERRIDE}" >> "${GITHUB_OUTPUT}"
-          echo "major=${MAJOR:-$MAJOR_OVERRIDE}" >> "${GITHUB_OUTPUT}"
-          echo "minor=${MINOR:-$MINOR_OVERRIDE}" >> "${GITHUB_OUTPUT}"
-          echo "sha=${SHA:-$SHA_OVERRIDE}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "release_created=${RELEASE_CREATED:-$RELEASE_CREATED_OVERRIDE}"
+            echo "tag_name=${TAG_NAME:-$TAG_NAME_OVERRIDE}"
+            echo "version=${VERSION:-$VERSION_OVERRIDE}"
+            echo "major=${MAJOR:-$MAJOR_OVERRIDE}"
+            echo "minor=${MINOR:-$MINOR_OVERRIDE}"
+            echo "sha=${SHA:-$SHA_OVERRIDE}"
+          } >> "${GITHUB_OUTPUT}"
 
   image:
     name: Publish Docker image
