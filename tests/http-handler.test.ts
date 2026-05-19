@@ -95,6 +95,50 @@ describe("createHttpHandler", () => {
     });
   });
 
+  it("bypasses API client caches for live-only projection refreshes", async () => {
+    const summaryOptions: Array<{ cacheMode?: string } | undefined> = [];
+    const marketOptions: Array<{ cacheMode?: string } | undefined> = [];
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: {
+          async getGameSummary(
+            _input: { league: "nba"; eventId: string },
+            options?: { cacheMode?: "default" | "bypass" }
+          ) {
+            summaryOptions.push(options);
+            return {
+              cacheStatus: "bypass" as const,
+              sourceUrl: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=401",
+              data: espnSummaryFixture({ eventId: "401" })
+            };
+          }
+        } as EspnClient,
+        kalshiClient: {
+          async searchMarkets(_input: Record<string, unknown>, options?: { cacheMode?: "default" | "bypass" }) {
+            marketOptions.push(options);
+            return {
+              cacheStatus: "bypass" as const,
+              sourceUrl: "https://api.elections.kalshi.com/trade-api/v2/markets",
+              data: {
+                markets: [marketFixture("KXNBA-CELNYK-TOTAL-203", 203)],
+                cursor: ""
+              }
+            };
+          }
+        } as KalshiClient
+      }),
+      "/api/nba/projections?event_id=401&scope=live"
+    );
+
+    const payload = JSON.parse(response.body) as ProjectionResponse;
+    expect(response.statusCode).toBe(200);
+    expect(payload.live_projection.status).toBe("ok");
+    expect(payload.live_projection.data?.live_projection.cache_status).toBe("bypass");
+    expect(payload.historical_projection).toBeUndefined();
+    expect(summaryOptions).toEqual([{ cacheMode: "bypass" }]);
+    expect(marketOptions).toEqual([{ cacheMode: "bypass" }]);
+  });
+
   it("omits historical market total when no live market line is available", async () => {
     const historicalInputs: Record<string, unknown>[] = [];
     const response = await callHandler(
@@ -925,6 +969,7 @@ interface ProjectionResponse {
         p_over?: number | null;
         tracked_total_line?: number | null;
         tracked_p_over?: number | null;
+        cache_status?: string;
         learned_projection?: unknown;
         data_quality: {
           status: string;

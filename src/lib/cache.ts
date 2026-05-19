@@ -1,4 +1,5 @@
 export type CacheStatus = "hit" | "miss" | "bypass" | "not_applicable";
+export type CacheMode = "default" | "bypass";
 
 const DEFAULT_MAX_ENTRIES = 500;
 

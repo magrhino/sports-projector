@@ -5,7 +5,7 @@ import {
   type EspnNormalizedGame,
   type EspnTeam
 } from "../clients/espn.js";
-import type { CacheStatus } from "../lib/cache.js";
+import type { CacheMode, CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { LeagueSchema, TeamQuerySchema, type League } from "../lib/validation.js";
 
@@ -18,7 +18,7 @@ interface TeamScheduleClient {
 }
 
 interface ScoreboardClient {
-  getScoreboard(input: { league: League; limit?: number }): Promise<{
+  getScoreboard(input: { league: League; limit?: number }, options?: { cacheMode?: CacheMode }): Promise<{
     cacheStatus: CacheStatus;
     data: unknown;
     sourceUrl: string;
@@ -68,7 +68,7 @@ export async function getLiveGames(
   }
 
   try {
-    const result = await client.getScoreboard({ league: league.data, limit: 100 });
+    const result = await client.getScoreboard({ league: league.data, limit: 100 }, { cacheMode: "bypass" });
     const data = normalizeScoreboard(league.data, result.data);
     const games = data.games.filter(isLiveGame);
 

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { EspnClient, normalizeGameSummary, type EspnNormalizedGame } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
-import type { CacheStatus } from "../lib/cache.js";
+import type { CacheMode, CacheStatus } from "../lib/cache.js";
 import { nowIso } from "../lib/response.js";
 import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
 import { EventIdSchema, NbaTotalLineSchema } from "../lib/validation.js";
@@ -22,7 +22,7 @@ interface CachedFetch<T> {
 }
 
 interface EspnSummaryClient {
-  getGameSummary(input: { league: "nba"; eventId: string }): Promise<CachedFetch<unknown>>;
+  getGameSummary(input: { league: "nba"; eventId: string }, options?: { cacheMode?: CacheMode }): Promise<CachedFetch<unknown>>;
 }
 
 interface HistoricalProjectionRunner {
@@ -89,11 +89,12 @@ export async function getNbaProjections(
   const kalshiClient = clients.kalshiClient ?? new KalshiClient();
   const historicalClient = clients.historicalClient ?? defaultWebHistoricalClient();
   const allowHistoricalFallback = clients.historicalClient === undefined;
+  const cacheOptions = parsed.scope === "live" ? { cacheMode: "bypass" as const } : undefined;
   let summaryResult: CachedFetch<unknown>;
   let game: EspnNormalizedGame | null;
 
   try {
-    summaryResult = await espnClient.getGameSummary({ league: "nba", eventId: parsed.eventId });
+    summaryResult = await espnClient.getGameSummary({ league: "nba", eventId: parsed.eventId }, cacheOptions);
     game = normalizeGameSummary("nba", parsed.eventId, summaryResult.data).game;
   } catch (error) {
     return {
@@ -119,7 +120,9 @@ export async function getNbaProjections(
     kalshiClient,
     clients.liveTrackingStore,
     clients.settingsStore,
-    parsed.trackedTotalLine
+    parsed.trackedTotalLine,
+    cacheOptions?.cacheMode,
+    summaryResult
   );
   const body: NbaProjectionResult["body"] = {
     source: "nba_projection",
@@ -195,13 +198,16 @@ async function projectLiveSection(
   kalshiClient: KalshiClient,
   liveTrackingStore?: LiveTrackingStore,
   settingsStore?: SettingsStore,
-  trackedTotalLine?: number | null
+  trackedTotalLine?: number | null,
+  cacheMode?: CacheMode,
+  espnSummary?: CachedFetch<unknown>
 ): Promise<ProjectionSection> {
   try {
     const data = await projectNbaLiveScore(
       { event_id: eventId, tracked_total_line: trackedTotalLine ?? undefined, include_debug: Boolean(liveTrackingStore) },
       espnClient as EspnClient,
-      kalshiClient
+      kalshiClient,
+      { cacheMode, espnSummary }
     );
     if ((data.live_projection.data_quality as { status?: unknown } | undefined)?.status === "live") {
       const model = liveTrackingStore?.loadLatestModel();

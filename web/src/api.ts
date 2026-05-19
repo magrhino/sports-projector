@@ -16,7 +16,7 @@ export async function searchGames(team: string, league: League, signal?: AbortSi
 
 export async function fetchLiveGames(league: League, signal?: AbortSignal): Promise<LiveGamesResponse> {
   const params = new URLSearchParams({ league });
-  return fetchJson<LiveGamesResponse>(`/api/games/live?${params.toString()}`, { signal });
+  return fetchJson<LiveGamesResponse>(`/api/games/live?${params.toString()}`, { cache: "no-store", signal });
 }
 
 export async function fetchProjection(
@@ -29,7 +29,10 @@ export async function fetchProjection(
   if (trackedTotalLine !== null && trackedTotalLine !== undefined) {
     params.set("tracked_total_line", String(trackedTotalLine));
   }
-  return fetchJson<ProjectionPayload>(`/api/nba/projections?${params.toString()}`, { signal });
+  return fetchJson<ProjectionPayload>(`/api/nba/projections?${params.toString()}`, {
+    cache: scope === "live" ? "no-store" : "default",
+    signal
+  });
 }
 
 export async function fetchTrackerStatus(signal?: AbortSignal): Promise<TrackerStatusPayload> {

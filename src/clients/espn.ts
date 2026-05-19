@@ -1,4 +1,4 @@
-import type { CacheStatus } from "../lib/cache.js";
+import type { CacheMode, CacheStatus } from "../lib/cache.js";
 import { TtlCache, ttlMsFromEnv } from "../lib/cache.js";
 import { ESPN_SITE_ORIGIN, buildUrl, fetchJson, type FetchJsonOptions } from "../lib/http.js";
 import { type League, getLeagueConfig } from "../lib/validation.js";
@@ -11,6 +11,10 @@ interface CachedFetch<T> {
 
 interface EspnClientOptions extends FetchJsonOptions {
   env?: NodeJS.ProcessEnv;
+}
+
+interface CacheFetchOptions {
+  cacheMode?: CacheMode;
 }
 
 export interface EspnTeam {
@@ -128,25 +132,34 @@ export class EspnClient {
     };
   }
 
-  async getScoreboard(input: { league: League; date?: string; limit?: number }): Promise<CachedFetch<unknown>> {
+  async getScoreboard(
+    input: { league: League; date?: string; limit?: number },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
     const url = buildEspnScoreboardUrl(input.league, input.date, input.limit);
-    return this.fetchCached(url, this.scoreboardCache);
+    return this.fetchCached(url, this.scoreboardCache, options);
   }
 
-  async getGameSummary(input: { league: League; eventId: string }): Promise<CachedFetch<unknown>> {
+  async getGameSummary(
+    input: { league: League; eventId: string },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
     const url = buildEspnSummaryUrl(input.league, input.eventId);
-    return this.fetchCached(url, this.detailCache);
+    return this.fetchCached(url, this.detailCache, options);
   }
 
-  async getTeams(input: { league: League }): Promise<CachedFetch<unknown>> {
+  async getTeams(input: { league: League }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
     const url = buildEspnTeamsUrl(input.league);
-    return this.fetchCached(url, this.detailCache);
+    return this.fetchCached(url, this.detailCache, options);
   }
 
-  async getTeamSchedule(input: { league: League; team: string; season?: number }): Promise<CachedFetch<unknown>> {
-    const team = await this.resolveTeam(input.league, input.team);
+  async getTeamSchedule(
+    input: { league: League; team: string; season?: number },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
+    const team = await this.resolveTeam(input.league, input.team, options);
     const url = buildEspnTeamScheduleUrl(input.league, team.id, input.season);
-    const result = await this.fetchCached(url, this.detailCache);
+    const result = await this.fetchCached(url, this.detailCache, options);
     return {
       ...result,
       data: {
@@ -156,12 +169,15 @@ export class EspnClient {
     };
   }
 
-  async getStandings(input: { league: League; season?: number }): Promise<CachedFetch<unknown>> {
+  async getStandings(
+    input: { league: League; season?: number },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
     const url = buildEspnStandingsUrl(input.league, input.season);
-    return this.fetchCached(url, this.detailCache);
+    return this.fetchCached(url, this.detailCache, options);
   }
 
-  async resolveTeam(league: League, teamQuery: string): Promise<EspnTeam> {
+  async resolveTeam(league: League, teamQuery: string, options: CacheFetchOptions = {}): Promise<EspnTeam> {
     if (/^\d+$/.test(teamQuery)) {
       return {
         id: teamQuery,
@@ -171,7 +187,7 @@ export class EspnClient {
       };
     }
 
-    const teamsResponse = await this.getTeams({ league });
+    const teamsResponse = await this.getTeams({ league }, options);
     const teams = extractTeams(teamsResponse.data);
     const normalizedQuery = normalizeForMatch(teamQuery);
 
@@ -203,8 +219,20 @@ export class EspnClient {
     throw new Error(`Could not resolve ESPN team "${teamQuery}" for ${league.toUpperCase()}`);
   }
 
-  private async fetchCached<T>(url: URL, cache: TtlCache<unknown>): Promise<CachedFetch<T>> {
+  private async fetchCached<T>(
+    url: URL,
+    cache: TtlCache<unknown>,
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<T>> {
     const key = url.toString();
+    if (options.cacheMode === "bypass") {
+      return {
+        cacheStatus: "bypass",
+        data: await fetchJson<T>(url, this.fetchOptions),
+        sourceUrl: key
+      };
+    }
+
     const result = await cache.getOrSet(key, async () => fetchJson<T>(url, this.fetchOptions));
     return {
       cacheStatus: result.status,

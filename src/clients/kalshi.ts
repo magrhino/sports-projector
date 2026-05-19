@@ -1,4 +1,4 @@
-import type { CacheStatus } from "../lib/cache.js";
+import type { CacheMode, CacheStatus } from "../lib/cache.js";
 import { TtlCache, ttlMsFromEnv } from "../lib/cache.js";
 import { KALSHI_ORIGIN, buildUrl, fetchJson, type FetchJsonOptions } from "../lib/http.js";
 
@@ -10,6 +10,10 @@ interface CachedFetch<T> {
 
 interface KalshiClientOptions extends FetchJsonOptions {
   env?: NodeJS.ProcessEnv;
+}
+
+interface CacheFetchOptions {
+  cacheMode?: CacheMode;
 }
 
 const DEFAULT_MARKETS_LIMIT = 20;
@@ -191,22 +195,25 @@ export class KalshiClient {
     seriesTicker?: string;
     eventTicker?: string;
     tickers?: readonly string[] | string;
-  }): Promise<CachedFetch<unknown>> {
+  }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
     const query = input.query?.trim();
     if (query) {
-      return this.searchMarketsByQuery({ ...input, query });
+      return this.searchMarketsByQuery({ ...input, query }, options);
     }
 
     const url = buildKalshiMarketsUrl(input);
-    return this.fetchCached(url);
+    return this.fetchCached(url, options);
   }
 
-  async getMarket(input: { ticker: string }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiMarketUrl(input.ticker));
+  async getMarket(input: { ticker: string }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiMarketUrl(input.ticker), options);
   }
 
-  async getEvent(input: { eventTicker: string; withNestedMarkets?: boolean }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiEventUrl(input.eventTicker, input.withNestedMarkets));
+  async getEvent(
+    input: { eventTicker: string; withNestedMarkets?: boolean },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiEventUrl(input.eventTicker, input.withNestedMarkets), options);
   }
 
   async getMilestones(input: {
@@ -218,20 +225,26 @@ export class KalshiClient {
     type?: string;
     minimumStartDate?: string;
     minUpdatedTs?: number;
-  }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiMilestonesUrl(input));
+  }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiMilestonesUrl(input), options);
   }
 
-  async getLiveData(input: { milestoneId: string; includePlayerStats?: boolean }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiLiveDataUrl(input.milestoneId, input.includePlayerStats));
+  async getLiveData(
+    input: { milestoneId: string; includePlayerStats?: boolean },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiLiveDataUrl(input.milestoneId, input.includePlayerStats), options);
   }
 
-  async getGameStats(input: { milestoneId: string }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiGameStatsUrl(input.milestoneId));
+  async getGameStats(input: { milestoneId: string }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiGameStatsUrl(input.milestoneId), options);
   }
 
-  async getOrderbook(input: { ticker: string; depth?: number }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiOrderbookUrl(input.ticker, input.depth));
+  async getOrderbook(
+    input: { ticker: string; depth?: number },
+    options: CacheFetchOptions = {}
+  ): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiOrderbookUrl(input.ticker, input.depth), options);
   }
 
   async getTrades(input: {
@@ -240,12 +253,20 @@ export class KalshiClient {
     ticker?: string;
     minTs?: number;
     maxTs?: number;
-  }): Promise<CachedFetch<unknown>> {
-    return this.fetchCached(buildKalshiTradesUrl(input));
+  }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
+    return this.fetchCached(buildKalshiTradesUrl(input), options);
   }
 
-  private async fetchCached<T>(url: URL): Promise<CachedFetch<T>> {
+  private async fetchCached<T>(url: URL, options: CacheFetchOptions = {}): Promise<CachedFetch<T>> {
     const key = url.toString();
+    if (options.cacheMode === "bypass") {
+      return {
+        cacheStatus: "bypass",
+        data: await fetchJson<T>(url, this.fetchOptions),
+        sourceUrl: key
+      };
+    }
+
     const result = await this.cache.getOrSet(key, async () => fetchJson<T>(url, this.fetchOptions));
     return {
       cacheStatus: result.status,
@@ -262,7 +283,7 @@ export class KalshiClient {
     seriesTicker?: string;
     eventTicker?: string;
     tickers?: readonly string[] | string;
-  }): Promise<CachedFetch<unknown>> {
+  }, options: CacheFetchOptions = {}): Promise<CachedFetch<unknown>> {
     const requestedLimit = normalizeMarketSearchLimit(input.limit);
     const matches: unknown[] = [];
     const cacheStatuses: CacheStatus[] = [];
@@ -278,7 +299,7 @@ export class KalshiClient {
       });
       sourceUrl ??= url.toString();
 
-      const result = await this.fetchCached<Record<string, unknown>>(url);
+      const result = await this.fetchCached<Record<string, unknown>>(url, options);
       cacheStatuses.push(result.cacheStatus);
 
       const data = asRecord(result.data);

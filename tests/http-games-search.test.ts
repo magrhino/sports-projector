@@ -117,8 +117,9 @@ describe("searchGamesByTeam", () => {
 
   it("returns all live ESPN scoreboard games for the selected league", async () => {
     const result = await getLiveGames(new URLSearchParams({ league: "nba" }), {
-      async getScoreboard(input: { league: "nba"; limit?: number }) {
+      async getScoreboard(input: { league: "nba"; limit?: number }, options?: { cacheMode?: "default" | "bypass" }) {
         expect(input).toEqual({ league: "nba", limit: 100 });
+        expect(options).toEqual({ cacheMode: "bypass" });
         return {
           cacheStatus: "bypass" as const,
           sourceUrl: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=100",

@@ -29,6 +29,9 @@ import type {
   TrackerStatusPayload
 } from "./types";
 
+const LIVE_GAMES_REFRESH_MS = 10000;
+const LIVE_PROJECTION_REFRESH_MS = 2000;
+
 export function useLiveGames(league: League) {
   const [games, setGames] = useState<Game[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -36,11 +39,13 @@ export function useLiveGames(league: League) {
   const requestId = useRef(0);
 
   const load = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, options: { silent?: boolean } = {}) => {
       const id = ++requestId.current;
-      setLoaded(false);
-      setError("");
-      setGames([]);
+      if (!options.silent) {
+        setLoaded(false);
+        setError("");
+        setGames([]);
+      }
 
       try {
         const payload = await fetchLiveGames(league, signal);
@@ -49,8 +54,12 @@ export function useLiveGames(league: League) {
         }
         setGames(sortGames(Array.isArray(payload.games) ? payload.games : []));
         setLoaded(true);
+        setError("");
       } catch (error) {
         if (signal?.aborted || id !== requestId.current) {
+          return;
+        }
+        if (options.silent) {
           return;
         }
         setGames([]);
@@ -64,7 +73,13 @@ export function useLiveGames(league: League) {
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    const timer = window.setInterval(() => {
+      void load(undefined, { silent: true });
+    }, LIVE_GAMES_REFRESH_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   return { games, loaded, error, reload: load };
@@ -251,7 +266,7 @@ export function useProjectionDetail(league: League) {
       if (!inFlight) {
         void loadProjection(selectedGame, "live", trackedTotalLine);
       }
-    }, 10000);
+    }, LIVE_PROJECTION_REFRESH_MS);
 
     return () => window.clearInterval(timer);
   }, [inFlight, league, loadProjection, selectedGame, trackedTotalLine]);
@@ -262,7 +277,7 @@ export function useProjectionDetail(league: League) {
     formatScoreStatus(detailGame),
     payload?.event_id ? `ESPN event ${payload.event_id}` : null,
     payload?.fetched_at ? `Updated ${formatDateTime(payload.fetched_at)}` : null,
-    detailGame && isLiveGame(detailGame) ? "Auto-refreshes every 10 seconds" : null
+    detailGame && isLiveGame(detailGame) ? "Auto-refreshes every 2 seconds" : null
   ]
     .filter(Boolean)
     .join(" | ");

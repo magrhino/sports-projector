@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { EspnClient } from "../src/clients/espn.js";
+import { KalshiClient } from "../src/clients/kalshi.js";
 import { TtlCache, ttlSecondsFromEnv } from "../src/lib/cache.js";
 import { fetchJson } from "../src/lib/http.js";
 
@@ -54,6 +56,59 @@ describe("fetchJson", () => {
     await expect(fetchJson(new URL("https://example.com/markets"), { timeoutMs: 1000 })).rejects.toThrow(
       "Blocked non-allowlisted URL origin"
     );
+  });
+});
+
+describe("public API client caching", () => {
+  it("lets ESPN scoreboard requests bypass the TTL cache", async () => {
+    let calls = 0;
+    const client = new EspnClient({
+      env: {
+        SPORTS_KALSHI_ESPN_SCOREBOARD_TTL_SECONDS: "30"
+      },
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse({ calls });
+      }
+    });
+
+    const first = await client.getScoreboard({ league: "nba", limit: 1 });
+    const second = await client.getScoreboard({ league: "nba", limit: 1 });
+    const bypassed = await client.getScoreboard({ league: "nba", limit: 1 }, { cacheMode: "bypass" });
+
+    expect(first.cacheStatus).toBe("miss");
+    expect(second.cacheStatus).toBe("hit");
+    expect(second.data).toEqual({ calls: 1 });
+    expect(bypassed.cacheStatus).toBe("bypass");
+    expect(bypassed.data).toEqual({ calls: 2 });
+    expect(calls).toBe(2);
+  });
+
+  it("lets Kalshi market requests bypass the TTL cache", async () => {
+    let calls = 0;
+    const client = new KalshiClient({
+      env: {
+        SPORTS_KALSHI_KALSHI_TTL_SECONDS: "15"
+      },
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse({ calls, markets: [] });
+      }
+    });
+
+    const first = await client.searchMarkets({ seriesTicker: "KXNBATOTAL", limit: 1 });
+    const second = await client.searchMarkets({ seriesTicker: "KXNBATOTAL", limit: 1 });
+    const bypassed = await client.searchMarkets(
+      { seriesTicker: "KXNBATOTAL", limit: 1 },
+      { cacheMode: "bypass" }
+    );
+
+    expect(first.cacheStatus).toBe("miss");
+    expect(second.cacheStatus).toBe("hit");
+    expect(second.data).toEqual({ calls: 1, markets: [] });
+    expect(bypassed.cacheStatus).toBe("bypass");
+    expect(bypassed.data).toEqual({ calls: 2, markets: [] });
+    expect(calls).toBe(2);
   });
 });
 
@@ -119,3 +174,12 @@ describe("TtlCache", () => {
     expect(ttlSecondsFromEnv({ TTL: "bad" }, "TTL", 20, 0, 30)).toBe(20);
   });
 });
+
+function jsonResponse(data: unknown): Response {
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: {
+      "content-type": "application/json"
+    }
+  });
+}

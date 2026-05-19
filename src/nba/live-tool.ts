@@ -14,7 +14,7 @@ import {
   normalizeMarkets,
   normalizeMilestones
 } from "../clients/kalshi.js";
-import type { CacheStatus } from "../lib/cache.js";
+import type { CacheMode, CacheStatus } from "../lib/cache.js";
 import { HttpError } from "../lib/http.js";
 import { makeResponse, nowIso } from "../lib/response.js";
 import {
@@ -89,6 +89,20 @@ interface LiveProjectionPayload extends Record<string, unknown> {
   cache_status: CacheStatus;
 }
 
+interface CachedFetch<T> {
+  cacheStatus: CacheStatus;
+  data: T;
+  sourceUrl: string;
+}
+
+interface CacheFetchOptions {
+  cacheMode?: CacheMode;
+}
+
+interface LiveProjectionRunOptions extends CacheFetchOptions {
+  espnSummary?: CachedFetch<unknown>;
+}
+
 interface DataQuality {
   status: "live" | "completed" | "not_live";
   warnings: string[];
@@ -149,7 +163,8 @@ export function registerLiveProjectionTools(
 export async function projectNbaLiveScore(
   input: LiveProjectionInput,
   espnClient: EspnClient,
-  kalshiClient: KalshiClient
+  kalshiClient: KalshiClient,
+  options: LiveProjectionRunOptions = {}
 ): Promise<LiveProjectionToolData> {
   const context: ToolContext = {
     sourceUrls: {},
@@ -157,10 +172,16 @@ export async function projectNbaLiveScore(
     warnings: []
   };
 
-  const espnResult = await espnClient.getGameSummary({
-    league: "nba",
-    eventId: input.event_id
-  });
+  const cacheOptions: CacheFetchOptions = { cacheMode: options.cacheMode };
+  const espnResult =
+    options.espnSummary ??
+    (await espnClient.getGameSummary(
+      {
+        league: "nba",
+        eventId: input.event_id
+      },
+      cacheOptions
+    ));
   context.sourceUrls.espn_summary = espnResult.sourceUrl;
   context.cacheStatuses.push(espnResult.cacheStatus);
 
@@ -178,12 +199,13 @@ export async function projectNbaLiveScore(
 
   const period = game.status.period ?? 1;
   const clock = game.status.clock ?? defaultClock(period);
-  const marketContext = await resolveKalshiMarket(input, kalshiClient, game, context);
+  const marketContext = await resolveKalshiMarket(input, kalshiClient, game, context, cacheOptions);
   const milestoneContext = await resolveKalshiMilestone(
     input,
     kalshiClient,
     marketContext.selectedMarket?.event_ticker ?? input.kalshi_event_ticker ?? null,
-    context
+    context,
+    cacheOptions
   );
   const recentScoring =
     extractRecentScoringFromGameStats({
@@ -298,7 +320,8 @@ async function resolveKalshiMarket(
   input: LiveProjectionInput,
   client: KalshiClient,
   game: EspnNormalizedGame,
-  context: ToolContext
+  context: ToolContext,
+  cacheOptions: CacheFetchOptions
 ): Promise<{
   marketTotalLine: number | null;
   selectedMarket: NormalizedKalshiMarket | null;
@@ -319,7 +342,7 @@ async function resolveKalshiMarket(
         tickers: input.kalshi_market_tickers,
         status: "all",
         limit: input.kalshi_market_tickers?.length
-      })
+      }, cacheOptions)
     );
     if (result) {
       context.sourceUrls.kalshi_markets = result.sourceUrl;
@@ -339,7 +362,7 @@ async function resolveKalshiMarket(
       client.getEvent({
         eventTicker: input.kalshi_event_ticker as string,
         withNestedMarkets: true
-      })
+      }, cacheOptions)
     );
     if (result) {
       context.sourceUrls.kalshi_event = result.sourceUrl;
@@ -359,7 +382,7 @@ async function resolveKalshiMarket(
       seriesTicker: "KXNBATOTAL",
       status: "open",
       limit: 100
-    })
+    }, cacheOptions)
   );
   if (!result) {
     return {
@@ -389,7 +412,8 @@ async function resolveKalshiMilestone(
   input: LiveProjectionInput,
   client: KalshiClient,
   eventTicker: string | null,
-  context: ToolContext
+  context: ToolContext,
+  cacheOptions: CacheFetchOptions
 ): Promise<{
   milestoneId: string | null;
   liveData: ReturnType<typeof normalizeLiveData> | null;
@@ -402,7 +426,7 @@ async function resolveKalshiMilestone(
         relatedEventTicker: eventTicker,
         category: "Sports",
         limit: 10
-      })
+      }, cacheOptions)
     );
     if (milestonesResult) {
       context.sourceUrls.kalshi_milestones = milestonesResult.sourceUrl;
@@ -422,12 +446,12 @@ async function resolveKalshiMilestone(
   const liveDataResult = await optionalFetch(context, "Kalshi live data", () =>
     client.getLiveData({
       milestoneId
-    })
+    }, cacheOptions)
   );
   const gameStatsResult = await optionalFetch(context, "Kalshi game stats", () =>
     client.getGameStats({
       milestoneId
-    })
+    }, cacheOptions)
   );
 
   if (liveDataResult) {
