@@ -85,6 +85,8 @@ describe("createHttpHandler", () => {
     expect(response.statusCode).toBe(200);
     expect(payload.game.short_name).toBe("NY @ BOS");
     expect(payload.live_projection.status).toBe("ok");
+    expect(payload.live_projection.data?.teams.home.logo).toBe("https://example.com/celtics.png");
+    expect(payload.live_projection.data?.teams.away.logo).toBe("https://example.com/knicks.png");
     expect(payload.live_projection.data?.live_projection.market_total_line).toBe(203);
     expect(payload.historical_projection?.status).toBe("ok");
     expect(historicalInputs[0]).toMatchObject({
@@ -964,6 +966,10 @@ interface ProjectionResponse {
     status: "ok" | "error";
     error?: string;
     data?: {
+      teams: {
+        home: { logo: string | null };
+        away: { logo: string | null };
+      };
       live_projection: {
         market_total_line: number | null;
         p_over?: number | null;
@@ -1049,7 +1055,12 @@ function espnSummaryFixture(input: {
             {
               homeAway: "home",
               score: input.homeScore === null ? undefined : input.homeScore ?? "83",
-              team: { id: "2", displayName: "Boston Celtics", abbreviation: "BOS" },
+              team: {
+                id: "2",
+                displayName: "Boston Celtics",
+                abbreviation: "BOS",
+                logo: "https://example.com/celtics.png"
+              },
               linescores: [
                 { period: 1, value: 25, displayValue: "25" },
                 { period: 2, value: 28, displayValue: "28" },
@@ -1060,7 +1071,12 @@ function espnSummaryFixture(input: {
             {
               homeAway: "away",
               score: input.awayScore === null ? undefined : input.awayScore ?? "78",
-              team: { id: "18", displayName: "New York Knicks", abbreviation: "NY" },
+              team: {
+                id: "18",
+                displayName: "New York Knicks",
+                abbreviation: "NY",
+                logo: "https://example.com/knicks.png"
+              },
               linescores: [
                 { period: 1, value: 24, displayValue: "24" },
                 { period: 2, value: 24, displayValue: "24" },

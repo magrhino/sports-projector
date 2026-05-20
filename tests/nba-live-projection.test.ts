@@ -282,6 +282,8 @@ describe("project_nba_live_score MCP tool", () => {
     });
 
     expect(response.source).toBe("live_projection");
+    expect(response.data.teams.home.logo).toBe("https://example.com/celtics.png");
+    expect(response.data.teams.away.logo).toBe("https://example.com/knicks.png");
     expect(response.data.live_projection.market_total_line).toBe(203);
     expect(response.data.live_projection.data_quality.market_line_source).toBe("explicit_tickers");
     expect(response.data.live_projection.projected_home_score).toBeGreaterThanOrEqual(83);
@@ -434,6 +436,10 @@ async function callLiveProjectionTool(input: {
 }): Promise<{
   source: string;
   data: {
+    teams: {
+      home: { logo: string | null };
+      away: { logo: string | null };
+    };
     live_projection: Record<string, any>;
   };
 }> {
@@ -525,7 +531,12 @@ function espnSummaryFixture(input: {
             {
               homeAway: "home",
               score: input.homeScore ?? "83",
-              team: { id: "2", displayName: "Boston Celtics", abbreviation: "BOS" },
+              team: {
+                id: "2",
+                displayName: "Boston Celtics",
+                abbreviation: "BOS",
+                logo: "https://example.com/celtics.png"
+              },
               linescores: [
                 { period: 1, value: 25, displayValue: "25" },
                 { period: 2, value: 28, displayValue: "28" },
@@ -535,7 +546,12 @@ function espnSummaryFixture(input: {
             {
               homeAway: "away",
               score: input.awayScore ?? "78",
-              team: { id: "18", displayName: "New York Knicks", abbreviation: "NY" },
+              team: {
+                id: "18",
+                displayName: "New York Knicks",
+                abbreviation: "NY",
+                logo: "https://example.com/knicks.png"
+              },
               linescores: [
                 { period: 1, value: 24, displayValue: "24" },
                 { period: 2, value: 24, displayValue: "24" },

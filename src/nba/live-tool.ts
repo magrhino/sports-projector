@@ -72,6 +72,7 @@ interface LiveProjectionTeam {
   id: string | null;
   name: string;
   abbreviation: string;
+  logo: string | null;
   score: number;
 }
 
@@ -295,12 +296,14 @@ export async function projectNbaLiveScore(
         id: home.id,
         name: home.name,
         abbreviation: home.abbreviation,
+        logo: home.logo,
         score: home.score
       },
       away: {
         id: away.id,
         name: away.name,
         abbreviation: away.abbreviation,
+        logo: away.logo,
         score: away.score
       }
     },
@@ -487,12 +490,14 @@ function normalizeProjectionTeam(team: NonNullable<EspnNormalizedGame["teams"]["
   id: string | null;
   name: string;
   abbreviation: string;
+  logo: string | null;
   score: number | null;
 } {
   return {
     id: team.id,
     name: team.name,
     abbreviation: team.abbreviation,
+    logo: team.logo ?? null,
     score: team.score
   };
 }
