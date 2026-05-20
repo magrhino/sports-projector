@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.4](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.3...sports-projector-v0.9.4) (2026-05-20)
+
+
+### Bug Fixes
+
+* **nba:** preserve live projection team logos ([b2bd55a](https://github.com/magrhino/sports-projector/commit/b2bd55a4b156d0f4daa7c20d8689e90696566ec3))
+* **ui:** refine live projection loading indicator ([8316038](https://github.com/magrhino/sports-projector/commit/8316038c421ff112cc2b16e063eda663985584ca))
+
 ## [0.9.3](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.2...sports-projector-v0.9.3) (2026-05-19)
 
 
