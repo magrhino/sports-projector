@@ -10,6 +10,7 @@ tmp/
 
 # Local historical artifacts and generated state are operator-managed.
 data/historical/
+data/.historical-refresh-*/
 data/live-tracking/
 data/settings.json
 data/settings.json.*.tmp
