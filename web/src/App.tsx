@@ -405,7 +405,13 @@ function LiveGamesPanel(props: {
 }) {
   let body;
   if (!props.loaded) {
-    body = <p className="muted">Loading {leagueLabel(props.league)} live games...</p>;
+    body = (
+      <LiveLoadingAnimation
+        label={`Loading ${leagueLabel(props.league)} live games...`}
+        detail="Checking the live board"
+        announce
+      />
+    );
   } else if (props.error) {
     body = (
       <p className="muted">
@@ -569,6 +575,8 @@ function ProjectionPanel(props: {
   onClearTrackedTotal: () => void;
   onRefresh: () => void;
 }) {
+  const showLiveActivity = props.trackingEnabled && props.inFlight;
+
   function submitTrackedTotal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     props.onApplyTrackedTotal();
@@ -632,7 +640,13 @@ function ProjectionPanel(props: {
       ) : null}
 
       <div className="projection-grid">
-        <ProjectionCard title="Live projection" section={props.payload?.live_projection} kind="live" loading={Boolean(props.selectedGame && !props.payload)} />
+        <ProjectionCard
+          title="Live projection"
+          section={props.payload?.live_projection}
+          kind="live"
+          loading={Boolean(props.selectedGame && !props.payload)}
+          isUpdating={showLiveActivity}
+        />
         <ProjectionCard
           title="Historical projection"
           section={props.payload?.historical_projection}
@@ -644,11 +658,33 @@ function ProjectionPanel(props: {
   );
 }
 
+function LiveLoadingAnimation(props: { label: string; detail: string; compact?: boolean; announce?: boolean }) {
+  return (
+    <div className={`live-loading${props.compact ? " compact" : ""}`} role={props.announce ? "status" : undefined}>
+      <div className="live-loading-court" aria-hidden="true">
+        <span className="live-loading-lane" />
+        <span className="live-loading-lane secondary" />
+        <span className="live-loading-ball" />
+      </div>
+      <div className="live-loading-copy">
+        <span className="live-loading-label">{props.label}</span>
+        <span className="live-loading-detail">{props.detail}</span>
+      </div>
+      <div className="live-loading-bars" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+    </div>
+  );
+}
+
 function ProjectionCard(props: {
   title: string;
   section: ProjectionSection | undefined;
   kind: "live" | "historical";
   loading: boolean;
+  isUpdating?: boolean;
 }) {
   let content;
   const data = asRecord(props.section?.data);
@@ -687,7 +723,15 @@ function ProjectionCard(props: {
 
   return (
     <article className={`projection-card projection-card-${props.kind}`}>
-      <h3>{props.title}</h3>
+      <div className="projection-card-heading">
+        <h3>{props.title}</h3>
+        {props.isUpdating ? <span className="projection-loading-spinner" aria-hidden="true" /> : null}
+      </div>
+      {props.kind === "live" ? (
+        <div className={`projection-loading-line${props.isUpdating ? " active" : ""}`} aria-hidden="true">
+          <span />
+        </div>
+      ) : null}
       {content}
     </article>
   );
