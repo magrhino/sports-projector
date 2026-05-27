@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.10.0...sports-projector-v0.10.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **deps:** refresh vulnerable npm transitives ([03d3e90](https://github.com/magrhino/sports-projector/commit/03d3e9019b370fd986901f88b684d993db34c3cf))
+
 ## [0.10.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.4...sports-projector-v0.10.0) (2026-05-27)
 
 
