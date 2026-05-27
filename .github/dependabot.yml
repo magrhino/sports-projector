@@ -17,17 +17,22 @@ updates:
     labels:
       - "dependencies"
       - "npm"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
       npm-production:
         dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
         patterns:
           - "*"
       npm-development:
         dependency-type: "development"
-        patterns:
-          - "*"
-      npm-security:
-        applies-to: "security-updates"
+        update-types:
+          - "minor"
+          - "patch"
         patterns:
           - "*"
 
@@ -45,6 +50,8 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -60,6 +67,8 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
