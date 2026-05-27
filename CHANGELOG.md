@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.4...sports-projector-v0.10.0) (2026-05-27)
+
+
+### Features
+
+* **ci:** Merge pull request [#21](https://github.com/magrhino/sports-projector/issues/21) from magrhino/codex/assess-node-24-upgrade ([06f7467](https://github.com/magrhino/sports-projector/commit/06f7467b5783223acb6e4425f305d14ed2660b70))
+
+
+### Bug Fixes
+
+* **logs:** add rolling JSONL log directory support ([e9c6788](https://github.com/magrhino/sports-projector/commit/e9c67886f2258510086c84f47ac5852c23d19057))
+* **logs:** Merge pull request [#19](https://github.com/magrhino/sports-projector/issues/19) from magrhino/codex/add-rolling-logs-directory ([21f3622](https://github.com/magrhino/sports-projector/commit/21f3622fcd83f87eef382f035babce5a003fae88))
+
 ## [0.9.4](https://github.com/magrhino/sports-projector/compare/sports-projector-v0.9.3...sports-projector-v0.9.4) (2026-05-20)
 
 
