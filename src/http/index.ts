@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { EspnClient } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
+import { createLoggerFromEnv, noopLogger, type AppLogger } from "../lib/logger.js";
 import { SettingsStore } from "../lib/settings.js";
 import { prepareLiveTrackingDatabase } from "../nba/live-db-recovery.js";
 import { HistoricalRefreshScheduler, historicalRefreshConfigFromEnv } from "../nba/historical-refresh.js";
@@ -36,6 +37,7 @@ export function createHttpHandler(
     liveModelTrainToken?: string | null;
     historicalRefreshContext?: HistoricalRefreshHttpContext | null;
     settingsStore?: SettingsStore;
+    logger?: AppLogger;
   } = {}
 ) {
   const publicDir = path.resolve(input.publicDir ?? process.env.SPORTS_PROJECTOR_PUBLIC_DIR ?? "public");
@@ -43,10 +45,17 @@ export function createHttpHandler(
   const kalshiClient = input.kalshiClient ?? new KalshiClient();
   const historicalClient = input.historicalClient;
   const settingsStore = input.settingsStore ?? new SettingsStore();
+  const logger = input.logger ?? noopLogger;
   const liveContext =
     input.liveTrackingContext !== undefined
       ? input.liveTrackingContext
-      : createLiveTrackingContext(input.liveTrackingConfig ?? liveTrackingConfig(), espnClient, kalshiClient, settingsStore);
+      : createLiveTrackingContext(
+          input.liveTrackingConfig ?? liveTrackingConfig(),
+          espnClient,
+          kalshiClient,
+          settingsStore,
+          logger
+        );
   const historicalRefreshContext = input.historicalRefreshContext ?? null;
   const liveModelTrainToken =
     input.liveModelTrainToken !== undefined
@@ -54,6 +63,7 @@ export function createHttpHandler(
       : process.env.SPORTS_PROJECTOR_LIVE_MODEL_TRAIN_TOKEN ?? null;
 
   return async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const requestId = nextRequestId();
     let url: URL;
     try {
       url = new URL(request.url ?? "/", "http://localhost");
@@ -62,61 +72,82 @@ export function createHttpHandler(
       return;
     }
 
-    if (url.pathname === "/api/nba/projections") {
-      await handleNbaProjections(request, response, url, {
-        espnClient,
-        kalshiClient,
-        historicalClient,
-        liveTrackingStore: liveContext?.store,
-        settingsStore
+    try {
+      if (url.pathname === "/api/nba/projections") {
+        await handleNbaProjections(request, response, url, {
+          espnClient,
+          kalshiClient,
+          historicalClient,
+          liveTrackingStore: liveContext?.store,
+          settingsStore,
+          logger
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/nba/live-tracking/status") {
+        await handleLiveTrackingStatus(request, response, liveContext);
+        return;
+      }
+
+      if (url.pathname === "/api/nba/live-model/train") {
+        await handleLiveModelTrain(request, response, liveContext, liveModelTrainToken);
+        return;
+      }
+
+      if (url.pathname === "/api/nba/historical-refresh/status") {
+        await handleHistoricalRefreshStatus(request, response, historicalRefreshContext);
+        return;
+      }
+
+      if (url.pathname === "/api/settings") {
+        await handleSettings(request, response, settingsStore, liveModelTrainToken);
+        return;
+      }
+
+      if (url.pathname === "/api/games/search") {
+        await handleGamesSearch(request, response, url, espnClient);
+        return;
+      }
+
+      if (url.pathname === "/api/games/live") {
+        await handleLiveGames(request, response, url, espnClient);
+        return;
+      }
+
+      if (url.pathname.startsWith("/api/")) {
+        writeJson(response, 404, { error: "API route not found." });
+        return;
+      }
+
+      await serveStatic(request, response, publicDir, url.pathname);
+    } catch (error) {
+      logger.error("Unhandled HTTP request error.", {
+        event: "http.request_unhandled_error",
+        error,
+        request_id: requestId,
+        method: request.method ?? null,
+        path: url.pathname,
+        remote_address: request.socket.remoteAddress ?? null
       });
-      return;
+      if (!response.headersSent && !response.writableEnded) {
+        writeJson(response, 500, { error: "Internal server error." });
+      } else {
+        response.destroy(error instanceof Error ? error : undefined);
+      }
     }
-
-    if (url.pathname === "/api/nba/live-tracking/status") {
-      await handleLiveTrackingStatus(request, response, liveContext);
-      return;
-    }
-
-    if (url.pathname === "/api/nba/live-model/train") {
-      await handleLiveModelTrain(request, response, liveContext, liveModelTrainToken);
-      return;
-    }
-
-    if (url.pathname === "/api/nba/historical-refresh/status") {
-      await handleHistoricalRefreshStatus(request, response, historicalRefreshContext);
-      return;
-    }
-
-    if (url.pathname === "/api/settings") {
-      await handleSettings(request, response, settingsStore, liveModelTrainToken);
-      return;
-    }
-
-    if (url.pathname === "/api/games/search") {
-      await handleGamesSearch(request, response, url, espnClient);
-      return;
-    }
-
-    if (url.pathname === "/api/games/live") {
-      await handleLiveGames(request, response, url, espnClient);
-      return;
-    }
-
-    if (url.pathname.startsWith("/api/")) {
-      writeJson(response, 404, { error: "API route not found." });
-      return;
-    }
-
-    await serveStatic(request, response, publicDir, url.pathname);
   };
 }
 
-function createHistoricalRefreshContext(settingsStore: SettingsStore): HistoricalRefreshHttpContext | null {
+function createHistoricalRefreshContext(
+  settingsStore: SettingsStore,
+  logger: AppLogger
+): HistoricalRefreshHttpContext | null {
   const scheduler = new HistoricalRefreshScheduler(
     historicalRefreshConfigFromEnv(),
     undefined,
-    () => settingsStore.read()
+    () => settingsStore.read(),
+    logger
   );
   if (!scheduler.config.enabled) {
     return null;
@@ -129,7 +160,8 @@ function createLiveTrackingContext(
   config: LiveTrackingConfig,
   espnClient: EspnClient,
   kalshiClient: KalshiClient,
-  settingsStore: SettingsStore
+  settingsStore: SettingsStore,
+  logger: AppLogger
 ): LiveTrackingHttpContext | null {
   if (!config.enabled) {
     return null;
@@ -137,7 +169,8 @@ function createLiveTrackingContext(
   prepareLiveTrackingDatabase({
     dbPath: config.dbPath,
     mode: config.dbRecovery,
-    sqliteBin: config.sqliteBin
+    sqliteBin: config.sqliteBin,
+    logger
   });
   const store = new LiveTrackingStore(config.dbPath);
   const readSettings = () => settingsStore.read();
@@ -146,9 +179,10 @@ function createLiveTrackingContext(
     store,
     espnClient,
     kalshiClient,
-    readSettings
+    readSettings,
+    logger
   });
-  const trainer = new LiveModelTrainingScheduler(config, store, readSettings);
+  const trainer = new LiveModelTrainingScheduler(config, store, readSettings, logger);
   tracker?.start();
   trainer.start();
   return {
@@ -201,6 +235,7 @@ async function handleNbaProjections(
     historicalClient?: HistoricalProjectionClient;
     liveTrackingStore?: LiveTrackingStore;
     settingsStore?: SettingsStore;
+    logger?: AppLogger;
   }
 ): Promise<void> {
   if (request.method !== "GET") {
@@ -370,15 +405,109 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
+let requestCounter = 0;
+
+function nextRequestId(): string {
+  requestCounter = (requestCounter + 1) % Number.MAX_SAFE_INTEGER;
+  return `req-${requestCounter.toString(36)}`;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const logger = createLoggerFromEnv();
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
   const settingsStore = new SettingsStore();
+  installFatalHandlers(logger);
+  logger.info("Starting sports-projector web app.", {
+    event: "web.starting",
+    port,
+    logger: logger.status()
+  });
   const server = createServer(createHttpHandler({
     settingsStore,
-    historicalRefreshContext: createHistoricalRefreshContext(settingsStore)
+    historicalRefreshContext: createHistoricalRefreshContext(settingsStore, logger),
+    logger
   }));
 
   server.listen(port, () => {
-    console.error(`sports-projector web app listening on http://localhost:${port}`);
+    logger.info(`sports-projector web app listening on http://localhost:${port}`, {
+      event: "web.listening",
+      port
+    });
   });
+  server.on("error", (error) => {
+    logger.fatal("HTTP server failed.", {
+      event: "web.server_error",
+      error
+    });
+    logger.flush();
+    process.exit(1);
+  });
+  installShutdownHandlers(server, logger);
+}
+
+function installFatalHandlers(logger: AppLogger): void {
+  let exiting = false;
+  const exitFatal = (event: string, error: unknown) => {
+    if (exiting) {
+      return;
+    }
+    exiting = true;
+    logger.fatal("Fatal process error.", {
+      event,
+      error
+    });
+    logger.flush();
+    process.exit(1);
+  };
+
+  process.on("uncaughtException", (error) => {
+    exitFatal("process.uncaught_exception", error);
+  });
+  process.on("unhandledRejection", (reason) => {
+    exitFatal("process.unhandled_rejection", reason);
+  });
+}
+
+function installShutdownHandlers(server: ReturnType<typeof createServer>, logger: AppLogger): void {
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    logger.warn("Received shutdown signal.", {
+      event: "process.shutdown_signal",
+      signal
+    });
+    const timeout = setTimeout(() => {
+      logger.fatal("Timed out waiting for HTTP server shutdown.", {
+        event: "process.shutdown_timeout",
+        signal
+      });
+      logger.flush();
+      process.exit(1);
+    }, 10000);
+    timeout.unref();
+    server.close((error) => {
+      clearTimeout(timeout);
+      if (error) {
+        logger.error("HTTP server shutdown failed.", {
+          event: "process.shutdown_error",
+          signal,
+          error
+        });
+        logger.flush();
+        process.exit(1);
+      }
+      logger.info("HTTP server shutdown complete.", {
+        event: "process.shutdown_complete",
+        signal
+      });
+      logger.flush();
+      process.exit(0);
+    });
+  };
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }

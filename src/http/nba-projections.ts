@@ -3,6 +3,7 @@ import path from "node:path";
 import { EspnClient, normalizeGameSummary, type EspnNormalizedGame } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
 import type { CacheMode, CacheStatus } from "../lib/cache.js";
+import { noopLogger, type AppLogger } from "../lib/logger.js";
 import { nowIso } from "../lib/response.js";
 import { DEFAULT_SETTINGS, type SettingsStore } from "../lib/settings.js";
 import { EventIdSchema, NbaTotalLineSchema } from "../lib/validation.js";
@@ -35,6 +36,7 @@ export interface NbaProjectionClients {
   historicalClient?: HistoricalProjectionRunner;
   liveTrackingStore?: LiveTrackingStore;
   settingsStore?: SettingsStore;
+  logger?: Pick<AppLogger, "error">;
 }
 
 type ProjectionScope = "all" | "live";
@@ -88,6 +90,7 @@ export async function getNbaProjections(
   const espnClient = clients.espnClient ?? new EspnClient();
   const kalshiClient = clients.kalshiClient ?? new KalshiClient();
   const historicalClient = clients.historicalClient ?? defaultWebHistoricalClient();
+  const logger = clients.logger ?? noopLogger;
   const allowHistoricalFallback = clients.historicalClient === undefined;
   const cacheOptions = parsed.scope === "live" ? { cacheMode: "bypass" as const } : undefined;
   let summaryResult: CachedFetch<unknown>;
@@ -120,6 +123,7 @@ export async function getNbaProjections(
     kalshiClient,
     clients.liveTrackingStore,
     clients.settingsStore,
+    logger,
     parsed.trackedTotalLine,
     cacheOptions?.cacheMode,
     summaryResult
@@ -198,6 +202,7 @@ async function projectLiveSection(
   kalshiClient: KalshiClient,
   liveTrackingStore?: LiveTrackingStore,
   settingsStore?: SettingsStore,
+  logger: Pick<AppLogger, "error"> = noopLogger,
   trackedTotalLine?: number | null,
   cacheMode?: CacheMode,
   espnSummary?: CachedFetch<unknown>
@@ -218,7 +223,7 @@ async function projectLiveSection(
         }
       }
     }
-    recordLiveTrackingSnapshot(liveTrackingStore, data);
+    recordLiveTrackingSnapshot(liveTrackingStore, data, logger);
     delete data.live_projection.debug;
     return {
       status: "ok",
@@ -236,7 +241,11 @@ function liveEnhancementsEnabled(settingsStore: SettingsStore | undefined): bool
   return settingsStore?.read().live_enhancements_enabled ?? DEFAULT_SETTINGS.live_enhancements_enabled;
 }
 
-function recordLiveTrackingSnapshot(liveTrackingStore: LiveTrackingStore | undefined, data: unknown): void {
+function recordLiveTrackingSnapshot(
+  liveTrackingStore: LiveTrackingStore | undefined,
+  data: unknown,
+  logger: Pick<AppLogger, "error">
+): void {
   if (!liveTrackingStore) {
     return;
   }
@@ -247,7 +256,10 @@ function recordLiveTrackingSnapshot(liveTrackingStore: LiveTrackingStore | undef
       payload: data
     });
   } catch (error) {
-    console.error(`Unable to record NBA live tracking snapshot: ${errorMessage(error)}`);
+    logger.error(`Unable to record NBA live tracking snapshot: ${errorMessage(error)}`, {
+      event: "live_tracking.snapshot_record_error",
+      error
+    });
   }
 }
 

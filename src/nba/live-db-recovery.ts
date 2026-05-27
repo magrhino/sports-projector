@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
+import type { AppLogger } from "../lib/logger.js";
 
 export type LiveDbRecoveryMode = "auto" | "off";
 
@@ -41,7 +42,7 @@ export interface PrepareLiveTrackingDatabaseOptions {
   logger?: LiveDbRecoveryLogger;
 }
 
-type LiveDbRecoveryLogger = Pick<Console, "error" | "info" | "warn">;
+type LiveDbRecoveryLogger = Pick<AppLogger, "error" | "info" | "warn">;
 
 interface DatabaseHealth {
   ok: boolean;
@@ -65,22 +66,36 @@ export function prepareLiveTrackingDatabase(options: PrepareLiveTrackingDatabase
   const health = checkDatabaseHealth(dbPath);
 
   if (health.missing) {
-    logger.info(`Live tracking database does not exist yet; creating ${dbPath}.`);
+    logger.info(`Live tracking database does not exist yet; creating ${dbPath}.`, {
+      event: "live_db.missing",
+      db_path: dbPath
+    });
     return { status: "missing", dbPath };
   }
 
   if (health.ok) {
-    logger.info(`Live tracking database passed quick_check: ${dbPath}.`);
+    logger.info(`Live tracking database passed quick_check: ${dbPath}.`, {
+      event: "live_db.healthy",
+      db_path: dbPath
+    });
     return { status: "healthy", dbPath };
   }
 
   const message = health.message ?? "unknown SQLite integrity failure";
   if (mode === "off") {
-    logger.warn(`Live tracking database failed quick_check and recovery is disabled: ${message}.`);
+    logger.warn(`Live tracking database failed quick_check and recovery is disabled: ${message}.`, {
+      event: "live_db.recovery_disabled",
+      db_path: dbPath,
+      error: message
+    });
     return { status: "disabled", dbPath, error: message };
   }
 
-  logger.warn(`Live tracking database failed quick_check; quarantining and attempting recovery: ${message}.`);
+  logger.warn(`Live tracking database failed quick_check; quarantining and attempting recovery: ${message}.`, {
+    event: "live_db.recovery_start",
+    db_path: dbPath,
+    error: message
+  });
   const quarantine = quarantineDatabase(dbPath);
 
   try {
@@ -88,7 +103,13 @@ export function prepareLiveTrackingDatabase(options: PrepareLiveTrackingDatabase
     logger.warn(
       `Recovered live tracking database at ${dbPath}; snapshots=${formatCount(counts.snapshots)}, games=${formatCount(
         counts.games
-      )}, models=${formatCount(counts.models)}, quarantine=${quarantine.directory}.`
+      )}, models=${formatCount(counts.models)}, quarantine=${quarantine.directory}.`,
+      {
+        event: "live_db.recovered",
+        db_path: dbPath,
+        quarantine_dir: quarantine.directory,
+        counts
+      }
     );
     return {
       status: "recovered",
@@ -101,7 +122,13 @@ export function prepareLiveTrackingDatabase(options: PrepareLiveTrackingDatabase
     createEmptyDatabase(dbPath);
     logger.error(
       `Unable to recover live tracking database; starting with a fresh database at ${dbPath}. ` +
-        `Original files are quarantined at ${quarantine.directory}. Recovery error: ${recoveryError}.`
+        `Original files are quarantined at ${quarantine.directory}. Recovery error: ${recoveryError}.`,
+      {
+        event: "live_db.recovery_failed",
+        db_path: dbPath,
+        quarantine_dir: quarantine.directory,
+        error
+      }
     );
     return {
       status: "fresh",
