@@ -106,6 +106,9 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Audit Node dependencies
+        run: npm run audit:moderate
+
       - name: Build
         run: npm run build
 
