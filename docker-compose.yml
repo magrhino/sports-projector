@@ -10,5 +10,6 @@ services:
       SPORTS_PROJECTOR_HISTORICAL_PYTHON: python3
       SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED: "true"
       SPORTS_PROJECTOR_LIVE_DB_PATH: /data/live-tracking/nba-live.sqlite
+      SPORTS_PROJECTOR_LOG_DIR: /data/logs
     volumes:
       - ./data:/data

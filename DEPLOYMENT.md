@@ -66,6 +66,13 @@ docker run -d \
   ghcr.io/magrhino/sports-projector:v1.0.0
 ```
 
+The Docker image also writes rolling JSONL logs to `/data/logs` by default. Mount `/data` to persist both application state and logs, then inspect crashes with:
+
+```bash
+docker logs sports-projector
+tail -F ./data/logs/sports-projector.log
+```
+
 Historical projection from Docker requires a mounted artifact directory. The stock Dockerfile includes Python and the projection package, but generated historical artifacts remain operator-managed state and must be mounted separately.
 
 ## Docker Compose
@@ -83,6 +90,7 @@ services:
       SPORTS_PROJECTOR_HISTORICAL_PYTHON: python3
       SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED: "true"
       SPORTS_PROJECTOR_LIVE_DB_PATH: /data/live-tracking/nba-live.sqlite
+      SPORTS_PROJECTOR_LOG_DIR: /data/logs
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -330,6 +338,10 @@ For external scheduling, disable the in-process scheduler and run `PYTHONPATH=py
 | `PORT` | `8080` | HTTP web app port |
 | `SPORTS_PROJECTOR_PUBLIC_DIR` | `public` | Static asset directory for the web server |
 | `SPORTS_PROJECTOR_SETTINGS_PATH` | `data/settings.json` under the root | JSON settings file for enhancement toggles and live auto-training interval |
+| `SPORTS_PROJECTOR_LOG_DIR` | unset locally, `/data/logs` in Docker | Enables rolling JSONL file logs in the configured directory |
+| `SPORTS_PROJECTOR_LOG_MAX_BYTES` | `10485760` | Maximum active log file size before rotation |
+| `SPORTS_PROJECTOR_LOG_MAX_FILES` | `5` | Number of rotated log files to retain |
+| `SPORTS_PROJECTOR_LOG_LEVEL` | `info` | Minimum logged level: `debug`, `info`, `warn`, `error`, or `fatal` |
 | `SPORTS_KALSHI_HTTP_TIMEOUT_MS` | `10000` | Public HTTP request timeout, clamped from 1000 to 30000 ms |
 | `SPORTS_KALSHI_ESPN_SCOREBOARD_TTL_SECONDS` | `20` | ESPN scoreboard cache TTL, clamped from 0 to 30 seconds |
 | `SPORTS_KALSHI_ESPN_DETAIL_TTL_SECONDS` | `30` | ESPN detail cache TTL, clamped from 0 to 60 seconds |

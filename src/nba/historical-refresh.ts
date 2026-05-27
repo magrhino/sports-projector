@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
+import { noopLogger, type AppLogger } from "../lib/logger.js";
 import {
   historicalProjectionConfigFromEnv,
   timeoutMsFromEnv,
@@ -68,7 +69,8 @@ export class HistoricalRefreshScheduler {
   constructor(
     readonly config: HistoricalRefreshConfig,
     private readonly runRefresh: HistoricalRefreshRunner = runHistoricalRefreshCommand,
-    private readonly readSettings: HistoricalSettingsReader = () => DEFAULT_SETTINGS
+    private readonly readSettings: HistoricalSettingsReader = () => DEFAULT_SETTINGS,
+    private readonly logger: Pick<AppLogger, "error"> = noopLogger
   ) {}
 
   start(): void {
@@ -106,6 +108,12 @@ export class HistoricalRefreshScheduler {
       return true;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.error("Historical refresh failed.", {
+        event: "historical_refresh.error",
+        error,
+        artifact_dir: this.config.artifactDir,
+        interval_seconds: this.config.intervalSeconds
+      });
       return false;
     } finally {
       this.lastFinishedAt = new Date().toISOString();
@@ -142,7 +150,11 @@ export class HistoricalRefreshScheduler {
   private safeSettings(): SportsProjectorSettings {
     try {
       return this.readSettings();
-    } catch {
+    } catch (error) {
+      this.logger.error("Unable to read historical refresh settings.", {
+        event: "historical_refresh.settings_error",
+        error
+      });
       return DEFAULT_SETTINGS;
     }
   }

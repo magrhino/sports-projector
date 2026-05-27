@@ -1,3 +1,4 @@
+import { noopLogger, type AppLogger } from "../lib/logger.js";
 import { DEFAULT_SETTINGS, type SportsProjectorSettings } from "../lib/settings.js";
 import type { LiveTrackingConfig, LiveTrackingStore } from "./live-tracking-store.js";
 
@@ -29,7 +30,8 @@ export class LiveModelTrainingScheduler {
   constructor(
     private readonly config: LiveTrackingConfig,
     private readonly store: LiveTrackingStore,
-    private readonly readSettings: SettingsReader = () => DEFAULT_SETTINGS
+    private readonly readSettings: SettingsReader = () => DEFAULT_SETTINGS,
+    private readonly logger: Pick<AppLogger, "error"> = noopLogger
   ) {}
 
   start(): void {
@@ -92,6 +94,11 @@ export class LiveModelTrainingScheduler {
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.lastSkipReason = null;
+      this.logger.error("Live model auto-training failed.", {
+        event: "live_training.train_error",
+        error,
+        min_snapshots: this.config.minSnapshots
+      });
       return false;
     } finally {
       this.lastFinishedAt = new Date().toISOString();
@@ -136,6 +143,10 @@ export class LiveModelTrainingScheduler {
       return this.readSettings();
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.error("Unable to read live training settings.", {
+        event: "live_training.settings_error",
+        error
+      });
       return DEFAULT_SETTINGS;
     }
   }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { AppLogger } from "../src/lib/logger.js";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
 import {
   HistoricalRefreshScheduler,
@@ -137,6 +138,32 @@ describe("HistoricalRefreshScheduler", () => {
     expect(ran).toBe(true);
     expect(runnerConfig?.historicalEnhancementsEnabled).toBe(false);
     expect(scheduler.status().enhancements_enabled).toBe(false);
+  });
+
+  it("logs refresh failures", async () => {
+    const logger = fakeErrorLogger();
+    const scheduler = new HistoricalRefreshScheduler(
+      config(),
+      async () => {
+        throw new Error("refresh failed");
+      },
+      () => DEFAULT_SETTINGS,
+      logger
+    );
+
+    const ran = await scheduler.refresh();
+
+    expect(ran).toBe(false);
+    expect(scheduler.status().last_error).toBe("refresh failed");
+    expect(logger.error).toHaveBeenCalledWith(
+      "Historical refresh failed.",
+      expect.objectContaining({
+        event: "historical_refresh.error",
+        error: expect.any(Error),
+        artifact_dir: "/repo/data/historical",
+        interval_seconds: 3600
+      })
+    );
   });
 
   it("surfaces historical artifact snapshot dates from inventory state", () => {
@@ -380,5 +407,11 @@ function config(): HistoricalRefreshConfig {
     root: "/repo",
     artifactDir: "/repo/data/historical",
     timeoutMs: 30000
+  };
+}
+
+function fakeErrorLogger(): Pick<AppLogger, "error"> & { error: ReturnType<typeof vi.fn> } {
+  return {
+    error: vi.fn()
   };
 }

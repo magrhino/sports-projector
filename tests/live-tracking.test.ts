@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
+import type { AppLogger } from "../src/lib/logger.js";
 import { DEFAULT_SETTINGS } from "../src/lib/settings.js";
 import { prepareLiveTrackingDatabase } from "../src/nba/live-db-recovery.js";
 import { LiveModelTrainingScheduler } from "../src/nba/live-training-scheduler.js";
@@ -381,6 +382,39 @@ describe("LiveModelTrainingScheduler", () => {
       vi.useRealTimers();
     }
   });
+
+  it("logs auto-training failures", async () => {
+    const { store, cleanup } = createStore();
+    const logger = fakeErrorLogger();
+    const trainSpy = vi.spyOn(store, "trainLatestModel").mockImplementation(() => {
+      throw new Error("training exploded");
+    });
+    try {
+      seedTrainableSnapshots(store, 2);
+      const scheduler = new LiveModelTrainingScheduler(
+        { ...config(store), minSnapshots: 2 },
+        store,
+        () => DEFAULT_SETTINGS,
+        logger
+      );
+
+      const trained = await scheduler.trainIfDue();
+
+      expect(trained).toBe(false);
+      expect(scheduler.status().last_error).toBe("training exploded");
+      expect(logger.error).toHaveBeenCalledWith(
+        "Live model auto-training failed.",
+        expect.objectContaining({
+          event: "live_training.train_error",
+          error: expect.any(Error),
+          min_snapshots: 2
+        })
+      );
+    } finally {
+      trainSpy.mockRestore();
+      cleanup();
+    }
+  });
 });
 
 describe("LiveNbaTracker", () => {
@@ -453,6 +487,40 @@ describe("LiveNbaTracker", () => {
     expect(enabledSnapshot?.learned_projected_total).toEqual(expect.any(Number));
     expect(disabledSnapshot?.learned_projected_total).toBeNull();
     expect(insufficientSnapshot?.learned_projected_total).toBeNull();
+  });
+
+  it("logs poll failures", async () => {
+    const { store, cleanup } = createStore();
+    const logger = fakeErrorLogger();
+    try {
+      const tracker = new LiveNbaTracker(
+        config(store),
+        store,
+        {
+          async getScoreboard() {
+            throw new Error("scoreboard down");
+          }
+        } as EspnClient,
+        kalshiClientDouble(),
+        () => DEFAULT_SETTINGS,
+        logger
+      );
+
+      await tracker.poll();
+
+      expect(tracker.status().last_error).toBe("scoreboard down");
+      expect(logger.error).toHaveBeenCalledWith(
+        "Live NBA tracker poll failed.",
+        expect.objectContaining({
+          event: "live_tracker.poll_error",
+          error: expect.any(Error),
+          interval_seconds: 30,
+          concurrency: 2
+        })
+      );
+    } finally {
+      cleanup();
+    }
   });
 });
 
@@ -591,6 +659,12 @@ function silentRecoveryLogger() {
     error: vi.fn(),
     info: vi.fn(),
     warn: vi.fn()
+  };
+}
+
+function fakeErrorLogger(): Pick<AppLogger, "error"> & { error: ReturnType<typeof vi.fn> } {
+  return {
+    error: vi.fn()
   };
 }
 

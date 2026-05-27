@@ -6,6 +6,7 @@ import {
   type EspnNormalizedTeam
 } from "../clients/espn.js";
 import { KalshiClient } from "../clients/kalshi.js";
+import { noopLogger, type AppLogger } from "../lib/logger.js";
 import { DEFAULT_SETTINGS, type SportsProjectorSettings } from "../lib/settings.js";
 import { isLiveModelAccuracyGatePassed, predictLearnedProjection } from "./live-learning.js";
 import { projectNbaLiveScore } from "./live-tool.js";
@@ -30,7 +31,8 @@ export class LiveNbaTracker {
     private readonly store: LiveTrackingStore,
     private readonly espnClient: EspnClient,
     private readonly kalshiClient: KalshiClient,
-    private readonly readSettings: () => SportsProjectorSettings = () => DEFAULT_SETTINGS
+    private readonly readSettings: () => SportsProjectorSettings = () => DEFAULT_SETTINGS,
+    private readonly logger: Pick<AppLogger, "error"> = noopLogger
   ) {}
 
   start(): void {
@@ -74,6 +76,12 @@ export class LiveNbaTracker {
       this.lastError = null;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.error("Live NBA tracker poll failed.", {
+        event: "live_tracker.poll_error",
+        error,
+        interval_seconds: this.config.intervalSeconds,
+        concurrency: this.config.concurrency
+      });
     } finally {
       this.polling = false;
     }
@@ -119,11 +127,12 @@ export function maybeCreateLiveTracker(input: {
   espnClient: EspnClient;
   kalshiClient: KalshiClient;
   readSettings?: () => SportsProjectorSettings;
+  logger?: Pick<AppLogger, "error">;
 }): LiveNbaTracker | null {
   if (!input.config.enabled) {
     return null;
   }
-  return new LiveNbaTracker(input.config, input.store, input.espnClient, input.kalshiClient, input.readSettings);
+  return new LiveNbaTracker(input.config, input.store, input.espnClient, input.kalshiClient, input.readSettings, input.logger);
 }
 
 function gameRecord(game: EspnNormalizedGame) {

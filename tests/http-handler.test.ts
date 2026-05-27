@@ -8,6 +8,7 @@ import type { EspnClient } from "../src/clients/espn.js";
 import type { KalshiClient } from "../src/clients/kalshi.js";
 import { createHttpHandler } from "../src/http/index.js";
 import type { HistoricalRefreshHttpContext } from "../src/http/historical-refresh.js";
+import type { AppLogger } from "../src/lib/logger.js";
 import { HistoricalRefreshScheduler } from "../src/nba/historical-refresh.js";
 import type { LiveTrackingHttpContext } from "../src/http/live-tracking.js";
 import { HistoricalProjectionClient, HistoricalProjectionError } from "../src/nba/historical-client.js";
@@ -28,6 +29,38 @@ describe("createHttpHandler", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.body).toBe('{"error":"API route not found."}');
+  });
+
+  it("logs unexpected route failures and returns a controlled 500 response", async () => {
+    const logger = fakeLogger();
+    const liveTrackingContext = {
+      get store() {
+        throw new Error("store unavailable");
+      }
+    } as LiveTrackingHttpContext;
+
+    const response = await callHandler(
+      createHttpHandler({
+        espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
+        kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
+        liveTrackingContext,
+        logger
+      }),
+      "/api/nba/projections?event_id=401"
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toBe('{"error":"Internal server error."}');
+    expect(logger.error).toHaveBeenCalledWith(
+      "Unhandled HTTP request error.",
+      expect.objectContaining({
+        event: "http.request_unhandled_error",
+        error: expect.any(Error),
+        request_id: expect.any(String),
+        method: "GET",
+        path: "/api/nba/projections"
+      })
+    );
   });
 
   it("serves web app icon assets with specific content types", async () => {
@@ -580,7 +613,7 @@ describe("createHttpHandler", () => {
 
   it("keeps projections successful when live tracking snapshot persistence fails", async () => {
     const context = createLiveTrackingContext();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logger = fakeLogger();
     context.store.recordProjectionSnapshot = () => {
       throw new Error("database is locked");
     };
@@ -589,7 +622,8 @@ describe("createHttpHandler", () => {
         createHttpHandler({
           espnClient: espnSummaryClient(espnSummaryFixture({ eventId: "401" })),
           kalshiClient: kalshiClientWithMarkets([marketFixture("KXNBA-CELNYK-TOTAL-203", 203)]),
-          liveTrackingContext: context
+          liveTrackingContext: context,
+          logger
         }),
         "/api/nba/projections?event_id=401&scope=live"
       );
@@ -597,9 +631,14 @@ describe("createHttpHandler", () => {
       const payload = JSON.parse(response.body) as ProjectionResponse;
       expect(response.statusCode).toBe(200);
       expect(payload.live_projection.status).toBe("ok");
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/database is locked/));
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringMatching(/database is locked/),
+        expect.objectContaining({
+          event: "live_tracking.snapshot_record_error",
+          error: expect.any(Error)
+        })
+      );
     } finally {
-      errorSpy.mockRestore();
       context.store.close();
       context.cleanup();
     }
@@ -956,6 +995,26 @@ function createResponseDouble(): ResponseDouble {
       return this;
     }
   } as ResponseDouble;
+}
+
+function fakeLogger(): AppLogger & { error: ReturnType<typeof vi.fn> } {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    flush: vi.fn(),
+    status: vi.fn(() => ({
+      file_logging_enabled: false,
+      log_dir: null,
+      log_file: null,
+      max_bytes: 10485760,
+      max_files: 5,
+      level: "info" as const,
+      error: null
+    }))
+  };
 }
 
 interface ProjectionResponse {
