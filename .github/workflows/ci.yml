@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docker: ${{ steps.filter.outputs.docker }}
+      release: ${{ steps.filter.outputs.release }}
       workflows: ${{ steps.filter.outputs.workflows }}
 
     steps:
@@ -70,20 +71,30 @@ jobs:
           fi
 
           docker=false
+          release=false
           workflows=false
           for file in "${files[@]}"; do
             case "$file" in
-              Dockerfile|.dockerignore|docker-compose.yml|package.json|package-lock.json)
+              Dockerfile|.dockerignore|docker-compose.yml)
                 docker=true
+                ;;
+              package.json|package-lock.json)
+                docker=true
+                release=true
                 ;;
               .github/workflows/*)
                 workflows=true
+                release=true
+                ;;
+              .release-please-manifest.json|release-please-config.json)
+                release=true
                 ;;
             esac
           done
 
           {
             printf 'docker=%s\n' "$docker"
+            printf 'release=%s\n' "$release"
             printf 'workflows=%s\n' "$workflows"
           } >> "$GITHUB_OUTPUT"
 
@@ -123,6 +134,56 @@ jobs:
       - name: Run Python tests
         run: PYTHONPATH=python python3 -m unittest discover -s python/tests
 
+  tsx-smoke:
+    name: Runtime smoke (tsx scripts)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run runtime smoke checks
+        run: npm run ci:runtime-smoke
+
+  ui-smoke:
+    name: UI smoke (Playwright)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        run: npm run test:e2e
+
   actionlint:
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest
@@ -139,8 +200,49 @@ jobs:
       - name: Run actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7 -color
 
-  docker-build:
-    name: Build Docker image
+  release-dry-run:
+    name: Release dry run
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.release == 'true' }}
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run actionlint
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7 -color
+
+      - name: Run release-please dry run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.base_ref || 'main' }}
+        run: |
+          node node_modules/release-please/build/src/bin/release-please.js release-pr \
+            --token="$GITHUB_TOKEN" \
+            --repo-url="$GITHUB_REPOSITORY" \
+            --target-branch="$TARGET_BRANCH" \
+            --config-file=release-please-config.json \
+            --manifest-file=.release-please-manifest.json \
+            --dry-run
+
+  docker-runtime-smoke:
+    name: Docker runtime smoke
     runs-on: ubuntu-latest
     needs:
       - changes
@@ -159,3 +261,44 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t sports-projector:ci .
+
+      - name: Run Docker container smoke checks
+        run: |
+          set -euo pipefail
+
+          container_id="$(docker run -d \
+            -p 18082:8080 \
+            -e SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED=false \
+            -e SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED=false \
+            sports-projector:ci)"
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container_id" || true
+            fi
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:18082/ -o /tmp/sports-projector-root.html; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != "true" ]; then
+            echo "Container did not become ready."
+            exit 1
+          fi
+
+          grep -q "Sports Projector" /tmp/sports-projector-root.html
+          curl -fsS http://127.0.0.1:18082/api/settings -o /tmp/sports-projector-settings.json
+          node -e "const fs = require('fs'); const payload = JSON.parse(fs.readFileSync('/tmp/sports-projector-settings.json', 'utf8')); if (!payload.settings || !payload.defaults) throw new Error('Unexpected settings payload');"
+
+          trap - EXIT
+          docker rm -f "$container_id" >/dev/null
