@@ -3,9 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const smokePort = Number(process.env.CI_RUNTIME_SMOKE_PORT || "18080");
+const useProcessGroupSignals = process.platform !== "win32";
 
 async function main() {
   await smokeMcpScript();
@@ -108,6 +110,7 @@ function spawnNpm(args, env = {}) {
       ...process.env,
       ...env
     },
+    detached: useProcessGroupSignals,
     stdio: ["ignore", "pipe", "pipe"]
   });
 }
@@ -151,21 +154,48 @@ async function fetchWithTimeout(url, timeoutMs) {
   }
 }
 
-async function stopProcess(child) {
+export async function stopProcess(
+  child,
+  { terminateTimeoutMs = 2_000, killTimeoutMs = 2_000 } = {}
+) {
   if (hasExited(child)) {
     return;
   }
 
-  child.kill("SIGTERM");
-  const exited = await Promise.race([
-    waitForExit(child),
-    delay(2_000).then(() => false)
-  ]);
+  signalProcess(child, "SIGTERM");
+  const exited = await waitForExitWithin(child, terminateTimeoutMs);
 
   if (!exited && !hasExited(child)) {
-    child.kill("SIGKILL");
-    await waitForExit(child);
+    signalProcess(child, "SIGKILL");
+    const killed = await waitForExitWithin(child, killTimeoutMs);
+    if (!killed && !hasExited(child)) {
+      const pid = child.pid === undefined ? "unknown" : child.pid;
+      throw new Error(`Timed out waiting for process ${pid} to exit after SIGKILL.`);
+    }
   }
+}
+
+function signalProcess(child, signal) {
+  if (useProcessGroupSignals && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (!isNoSuchProcessError(error)) {
+        child.kill(signal);
+      }
+      return;
+    }
+  }
+
+  child.kill(signal);
+}
+
+async function waitForExitWithin(child, timeoutMs) {
+  return Promise.race([
+    waitForExit(child),
+    delay(timeoutMs).then(() => false)
+  ]);
 }
 
 function waitForExit(child) {
@@ -181,7 +211,13 @@ function hasExited(child) {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+function isNoSuchProcessError(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
