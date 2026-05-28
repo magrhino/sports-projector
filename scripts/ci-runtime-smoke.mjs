@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -40,8 +43,10 @@ async function smokeMcpScript() {
 }
 
 async function smokeWebScript() {
+  const publicDir = await createSmokePublicDir();
   const child = spawnNpm(["run", "web"], {
     PORT: String(smokePort),
+    SPORTS_PROJECTOR_PUBLIC_DIR: publicDir,
     SPORTS_PROJECTOR_HISTORICAL_REFRESH_ENABLED: "false",
     SPORTS_PROJECTOR_LIVE_TRACKING_ENABLED: "false"
   });
@@ -68,7 +73,8 @@ async function smokeWebScript() {
         }
       },
       "npm run web HTTP readiness",
-      15_000
+      15_000,
+      () => output
     );
 
     const root = await fetchText(`http://127.0.0.1:${smokePort}/`);
@@ -82,7 +88,18 @@ async function smokeWebScript() {
     }
   } finally {
     await stopProcess(child);
+    await rm(publicDir, { recursive: true, force: true });
   }
+}
+
+async function createSmokePublicDir() {
+  const publicDir = await mkdtemp(path.join(tmpdir(), "sports-projector-smoke-"));
+  await writeFile(
+    path.join(publicDir, "index.html"),
+    "<!doctype html><html><head><title>Sports Projector</title></head><body>Sports Projector</body></html>\n",
+    "utf-8"
+  );
+  return publicDir;
 }
 
 function spawnNpm(args, env = {}) {
@@ -95,7 +112,7 @@ function spawnNpm(args, env = {}) {
   });
 }
 
-async function waitFor(predicate, label, timeoutMs) {
+async function waitFor(predicate, label, timeoutMs, output = () => "") {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) {
@@ -103,7 +120,9 @@ async function waitFor(predicate, label, timeoutMs) {
     }
     await delay(250);
   }
-  throw new Error(`Timed out waiting for ${label}.`);
+  const capturedOutput = output().trim();
+  const outputDetails = capturedOutput ? `\n${capturedOutput}` : "";
+  throw new Error(`Timed out waiting for ${label}.${outputDetails}`);
 }
 
 async function fetchText(url) {
