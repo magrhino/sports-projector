@@ -1,3 +1,0 @@
-{"timestamp":"2026-05-31T03:10:13.492Z","level":"info","event":"web.starting","message":"Starting sports-projector web app.","context":{"port":8080,"logger":{"file_logging_enabled":true,"log_dir":"/data/logs","log_file":"/data/logs/sports-projector.log","max_bytes":10485760,"max_files":5,"level":"info","error":null}}}
-{"timestamp":"2026-05-31T03:10:13.823Z","level":"info","event":"live_db.healthy","message":"Live tracking database passed quick_check: /data/live-tracking/nba-live.sqlite.","context":{"db_path":"/data/live-tracking/nba-live.sqlite"}}
-{"timestamp":"2026-05-31T03:10:13.883Z","level":"info","event":"web.listening","message":"sports-projector web app listening on http://localhost:8080","context":{"port":8080}}

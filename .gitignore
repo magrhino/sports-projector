@@ -16,6 +16,7 @@ public/assets/*
 data/historical/
 data/.historical-refresh-*/
 data/live-tracking/
+data/logs/
 data/settings.json
 data/settings.json.*.tmp
 
