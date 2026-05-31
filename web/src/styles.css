@@ -11,16 +11,17 @@
   --surface-subtle: #f8faf7;
   --surface-strong: #eef3ee;
   --text: #18212d;
-  --muted: #697586;
+  --muted: #5d6875;
   --soft: #475467;
   --border: #d8ded6;
   --border-strong: #b9c4b8;
   --primary: #2557d6;
   --primary-strong: #163ca1;
+  --primary-text: #ffffff;
   --primary-soft: #e8efff;
   --green: #0f7b56;
   --green-soft: #e3f7ec;
-  --amber: #b25f00;
+  --amber: #965000;
   --amber-soft: #fff2dd;
   --red: #c5342b;
   --red-soft: #fff1ef;
@@ -47,6 +48,7 @@
     --border-strong: #43505f;
     --primary: #7ba5ff;
     --primary-strong: #a9c3ff;
+    --primary-text: #101419;
     --primary-soft: #1c2d52;
     --green: #61d49d;
     --green-soft: #173728;
@@ -279,7 +281,7 @@ select {
 .primary-button {
   border: 1px solid var(--primary);
   background: var(--primary);
-  color: #ffffff;
+  color: var(--primary-text);
 }
 
 .primary-button:hover:not(:disabled) {
