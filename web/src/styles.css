@@ -91,8 +91,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
-tr:focus-visible {
+select:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -668,11 +667,7 @@ th {
   text-transform: uppercase;
 }
 
-tbody tr {
-  cursor: pointer;
-}
-
-tbody tr:hover,
+tbody tr:focus-within,
 tbody tr.selected-row {
   background: var(--primary-soft);
 }
@@ -684,6 +679,30 @@ tr:last-child td {
 .cell-stack {
   display: grid;
   gap: 5px;
+}
+
+.select-cell {
+  width: 1%;
+  padding-block: 4px;
+  white-space: nowrap;
+}
+
+.table-select-button {
+  display: inline-flex;
+  min-height: 44px;
+  width: 100%;
+  align-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 800;
+  text-align: left;
+}
+
+.table-select-button:hover {
+  color: var(--primary);
 }
 
 .source-cell,
