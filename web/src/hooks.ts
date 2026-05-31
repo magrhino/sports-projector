@@ -31,6 +31,7 @@ import type {
 
 const LIVE_GAMES_REFRESH_MS = 10000;
 const LIVE_PROJECTION_REFRESH_MS = 2000;
+const LIVE_PROJECTION_MAX_BACKOFF_MS = 30000;
 
 export function useLiveGames(league: League) {
   const [games, setGames] = useState<Game[]>([]);
@@ -172,17 +173,19 @@ export function useProjectionDetail(league: League) {
       try {
         const nextPayload = await fetchProjection(game.id, scope, trackedLine);
         if (id !== requestId.current) {
-          return;
+          return true;
         }
         setPayload((current) => (scope === "live" ? { ...(current ?? {}), ...nextPayload } : nextPayload));
         setSelectedGame(nextPayload.game || game);
         setLoadingMessage(nextPayload.fetched_at ? `Updated ${formatDateTime(nextPayload.fetched_at)}.` : "");
+        return true;
       } catch (error) {
         if (id !== requestId.current) {
-          return;
+          return true;
         }
         setError(errorMessage(error, "Projection request failed."));
         setLoadingMessage("");
+        return false;
       } finally {
         if (id === requestId.current) {
           setInFlight(false);
@@ -262,14 +265,56 @@ export function useProjectionDetail(league: League) {
       return undefined;
     }
 
-    const timer = window.setInterval(() => {
-      if (!inFlight) {
-        void loadProjection(selectedGame, "live", trackedTotalLine);
-      }
-    }, LIVE_PROJECTION_REFRESH_MS);
+    const game = selectedGame;
+    let cancelled = false;
+    let timer: number | undefined;
+    let nextDelay = LIVE_PROJECTION_REFRESH_MS;
 
-    return () => window.clearInterval(timer);
-  }, [inFlight, league, loadProjection, selectedGame, trackedTotalLine]);
+    function clearTimer() {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+    }
+
+    function schedule(delay: number) {
+      clearTimer();
+      timer = window.setTimeout(async () => {
+        if (cancelled || document.visibilityState === "hidden") {
+          return;
+        }
+
+        const succeeded = await loadProjection(game, "live", trackedTotalLine);
+        if (cancelled) {
+          return;
+        }
+
+        nextDelay = succeeded ? LIVE_PROJECTION_REFRESH_MS : Math.min(nextDelay * 2, LIVE_PROJECTION_MAX_BACKOFF_MS);
+        schedule(nextDelay);
+      }, delay);
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        nextDelay = LIVE_PROJECTION_REFRESH_MS;
+        schedule(0);
+        return;
+      }
+
+      clearTimer();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (document.visibilityState === "visible") {
+      schedule(LIVE_PROJECTION_REFRESH_MS);
+    }
+
+    return () => {
+      cancelled = true;
+      clearTimer();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [league, loadProjection, selectedGame, trackedTotalLine]);
 
   const detailGame = payload?.game || selectedGame;
   const title = detailGame?.short_name || detailGame?.name || (payload?.event_id ? `ESPN event ${payload.event_id}` : "Projection");
@@ -277,7 +322,7 @@ export function useProjectionDetail(league: League) {
     formatScoreStatus(detailGame),
     payload?.event_id ? `ESPN event ${payload.event_id}` : null,
     payload?.fetched_at ? `Updated ${formatDateTime(payload.fetched_at)}` : null,
-    detailGame && isLiveGame(detailGame) ? "Auto-refreshes every 2 seconds" : null
+    detailGame && isLiveGame(detailGame) ? "Auto-refreshes every 2 seconds while active" : null
   ]
     .filter(Boolean)
     .join(" | ");

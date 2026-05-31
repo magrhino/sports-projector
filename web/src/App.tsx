@@ -429,7 +429,7 @@ function LiveGamesPanel(props: {
             type="button"
             className={`live-game-button${props.selectedGameId === game.id ? " selected" : ""}`}
             aria-label={`Open projections for ${game.name || game.short_name || "live game"}`}
-            aria-selected={props.selectedGameId === game.id}
+            aria-pressed={props.selectedGameId === game.id}
             onClick={() => props.onSelect(game)}
           >
             <span className="live-game-matchup">
@@ -496,34 +496,33 @@ function ResultsPanel(props: {
                 </tr>
               </thead>
               <tbody>
-                {props.games.map((game) => (
-                  <tr
-                    key={game.id}
-                    className={props.selectedGameId === game.id ? "selected-row" : ""}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`Open projections for ${game.name || game.short_name || "game"}`}
-                    aria-selected={props.selectedGameId === game.id}
-                    onClick={() => props.onSelect(game)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        props.onSelect(game);
-                      }
-                    }}
-                  >
-                    <td>{formatDateTime(game.start_time)}</td>
-                    <TeamCell team={game.teams?.away} />
-                    <TeamCell team={game.teams?.home} />
-                    <td>
-                      <div className="cell-stack">
-                        <span>{formatScoreStatus(game)}</span>
-                        {isLiveGame(game) ? <span className="live-badge">LIVE</span> : null}
-                      </div>
-                    </td>
-                    <td className="source-cell">{props.source.toUpperCase()}</td>
-                  </tr>
-                ))}
+                {props.games.map((game) => {
+                  const isSelected = props.selectedGameId === game.id;
+                  return (
+                    <tr key={game.id} className={isSelected ? "selected-row" : ""}>
+                      <td className="select-cell">
+                        <button
+                          type="button"
+                          className="table-select-button"
+                          aria-label={`Open projections for ${game.name || game.short_name || "game"}`}
+                          aria-pressed={isSelected}
+                          onClick={() => props.onSelect(game)}
+                        >
+                          {formatDateTime(game.start_time)}
+                        </button>
+                      </td>
+                      <TeamCell team={game.teams?.away} />
+                      <TeamCell team={game.teams?.home} />
+                      <td>
+                        <div className="cell-stack">
+                          <span>{formatScoreStatus(game)}</span>
+                          {isLiveGame(game) ? <span className="live-badge">LIVE</span> : null}
+                        </div>
+                      </td>
+                      <td className="source-cell">{props.source.toUpperCase()}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -535,7 +534,7 @@ function ResultsPanel(props: {
                 type="button"
                 className={`result-card${props.selectedGameId === game.id ? " selected" : ""}`}
                 aria-label={`Open projections for ${game.name || game.short_name || "game"}`}
-                aria-selected={props.selectedGameId === game.id}
+                aria-pressed={props.selectedGameId === game.id}
                 onClick={() => props.onSelect(game)}
               >
                 <span className="result-card-date">{formatDateTime(game.start_time)}</span>

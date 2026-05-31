@@ -7,16 +7,17 @@ colors:
   surface-subtle: "#f8faf7"
   surface-strong: "#eef3ee"
   text: "#18212d"
-  muted: "#697586"
+  muted: "#5d6875"
   soft: "#475467"
   border: "#d8ded6"
   border-strong: "#b9c4b8"
   primary: "#2557d6"
   primary-strong: "#163ca1"
+  primary-text: "#ffffff"
   primary-soft: "#e8efff"
   success: "#0f7b56"
   success-soft: "#e3f7ec"
-  warning: "#b25f00"
+  warning: "#965000"
   warning-soft: "#fff2dd"
   danger: "#c5342b"
   danger-soft: "#fff1ef"
@@ -24,6 +25,7 @@ colors:
   dark-surface: "#171d24"
   dark-surface-subtle: "#1d252d"
   dark-text: "#edf2f7"
+  dark-primary-text: "#101419"
 typography:
   display:
     fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
@@ -66,7 +68,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.primary}"
-    textColor: "{colors.surface}"
+    textColor: "{colors.primary-text}"
     rounded: "{rounded.sm}"
     padding: "0 16px"
     height: "44px"
