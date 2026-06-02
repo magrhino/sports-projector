@@ -52,15 +52,15 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
     "better-sqlite3": "^12.10.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.12.4",
-    "@types/react": "^19.2.7",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "release-please": "^17.6.0",
     "tsx": "^4.20.3",
