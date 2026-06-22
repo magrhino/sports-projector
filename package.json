@@ -57,13 +57,13 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "^1.61.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.12.4",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
-    "release-please": "^17.6.0",
-    "tsx": "^4.20.3",
+    "release-please": "^17.9.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.8.3",
     "vite": "^6.4.2",
     "vitest": "^3.2.4"
